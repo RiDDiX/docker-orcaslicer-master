@@ -107,6 +107,95 @@ shm_size: 2gb
 | Older Intel GPU (pre-Skylake) | Add `-e MESA_LOADER_DRIVER_OVERRIDE=i965` |
 | Disable GPU acceleration | Add `-e DISABLE_ZINK=true -e DISABLE_DRI3=true` |
 
+## Stability Watchdog
+
+This fork includes an automatic watchdog service that monitors OrcaSlicer and recovers from common issues.
+
+### How It Works
+
+The watchdog runs as a background service (`svc-orca-watchdog`) and performs the following checks every 30 seconds:
+
+1. **Process Responsiveness**: Verifies OrcaSlicer is responding to signals
+2. **Memory Usage**: Monitors RAM consumption and triggers cleanup if usage exceeds 80%
+3. **CPU Hang Detection**: Detects if OrcaSlicer is stuck at 100% CPU for more than 5 minutes
+4. **Shader Cache Size**: Automatically cleans Mesa shader cache when it exceeds 512MB
+
+### Automatic Recovery Actions
+
+| Condition | Action |
+|-----------|--------|
+| Process unresponsive | Graceful restart (SIGTERM → SIGKILL) |
+| Memory > 80% | Clear shader cache, then restart if still high |
+| CPU stuck at 100% for 5+ min | Force restart |
+| Shader cache > 512MB | Automatic cleanup |
+
+### Watchdog Logs
+
+You can monitor the watchdog activity in the container logs:
+
+```bash
+docker logs orcaslicer 2>&1 | grep WATCHDOG
+```
+
+Example output:
+```
+[2026-01-16 09:00:00] WATCHDOG: Starting OrcaSlicer watchdog service
+[2026-01-16 09:05:30] WATCHDOG: High memory usage detected: 2048MB (82%)
+[2026-01-16 09:05:30] WATCHDOG: Clearing shader cache to free memory...
+```
+
+## Memory Management
+
+OrcaSlicer can experience freezes when changing filament or print settings, especially with Intel iGPUs. This fork implements several memory optimizations to prevent these issues.
+
+### OrcaSlicer Wrapper
+
+All OrcaSlicer launches go through a wrapper script (`/usr/local/bin/orcaslicer-wrapper`) that provides:
+
+| Feature | Description |
+|---------|-------------|
+| **Memory Limits** | 8GB virtual memory limit, 4GB resident memory limit |
+| **Single Instance Lock** | Prevents multiple OrcaSlicer instances from running |
+| **Pre-launch Cleanup** | Clears page cache before starting |
+| **Exit Cleanup** | Cleans oversized shader cache (>1GB) on exit |
+
+### Mesa/OpenGL Optimizations
+
+The following environment variables are automatically set to improve stability:
+
+```bash
+# Reduce memory pressure
+MESA_SHADER_CACHE_MAX_SIZE=512M      # Limit shader cache size
+MALLOC_TRIM_THRESHOLD_=131072         # More aggressive memory trimming
+MALLOC_MMAP_THRESHOLD_=131072         # Use mmap for smaller allocations
+
+# Prevent race conditions
+mesa_glthread=false                   # Disable threaded GL
+__GL_MaxFramesAllowed=1               # Reduce frame buffer queue
+```
+
+### Shared Memory (shm_size)
+
+OrcaSlicer uses shared memory for OpenGL operations. The recommended minimum is `2gb`:
+
+```yaml
+shm_size: 2gb  # Minimum recommended
+shm_size: 4gb  # For complex models or frequent settings changes
+```
+
+**Symptoms of insufficient shared memory:**
+- Freezes when switching filaments
+- Crashes during print preview generation
+- Slow UI response when changing settings
+
+### Manual Cache Cleanup
+
+If you experience performance degradation, you can manually clear the shader cache:
+
+```bash
+docker exec orcaslicer rm -rf /config/.cache/mesa_shader_cache/*
+```
+
 ## Environment Variables
 
 | Variable | Default | Description |
