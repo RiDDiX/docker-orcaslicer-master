@@ -1,0 +1,125 @@
+name: Check OrcaSlicer Release
+
+on:
+  schedule:
+    # Run daily at 6:00 UTC
+    - cron: '0 6 * * *'
+  workflow_dispatch:
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: riddix/orcaslicer
+
+jobs:
+  check-and-build:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      packages: write
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Get latest OrcaSlicer release
+        id: orca_release
+        run: |
+          LATEST_VERSION=$(curl -sX GET "https://api.github.com/repos/SoftFever/OrcaSlicer/releases/latest" | jq -r '.tag_name')
+          echo "latest_version=${LATEST_VERSION}" >> $GITHUB_OUTPUT
+          echo "Latest OrcaSlicer version: ${LATEST_VERSION}"
+
+      - name: Check if image exists with this version
+        id: check_image
+        run: |
+          VERSION="${{ steps.orca_release.outputs.latest_version }}"
+          
+          # Try to get the manifest for this version tag
+          TOKEN=$(curl -s "https://ghcr.io/token?scope=repository:${{ env.IMAGE_NAME }}:pull" | jq -r '.token')
+          
+          RESPONSE=$(curl -s -o /dev/null -w "%{http_code}" \
+            -H "Authorization: Bearer ${TOKEN}" \
+            -H "Accept: application/vnd.docker.distribution.manifest.v2+json" \
+            "https://ghcr.io/v2/${{ env.IMAGE_NAME }}/manifests/${VERSION}")
+          
+          if [ "$RESPONSE" = "200" ]; then
+            echo "Image with version ${VERSION} already exists"
+            echo "needs_build=false" >> $GITHUB_OUTPUT
+          else
+            echo "Image with version ${VERSION} does not exist, triggering build"
+            echo "needs_build=true" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Set up QEMU
+        if: steps.check_image.outputs.needs_build == 'true'
+        uses: docker/setup-qemu-action@v3
+
+      - name: Set up Docker Buildx
+        if: steps.check_image.outputs.needs_build == 'true'
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GitHub Container Registry
+        if: steps.check_image.outputs.needs_build == 'true'
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push Docker image
+        if: steps.check_image.outputs.needs_build == 'true'
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          push: true
+          tags: |
+            ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:latest
+            ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ steps.orca_release.outputs.latest_version }}
+          build-args: |
+            BUILD_DATE=${{ github.event.repository.updated_at }}
+            VERSION=${{ steps.orca_release.outputs.latest_version }}-ls1
+            ORCASLICER_VERSION=${{ steps.orca_release.outputs.latest_version }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+          platforms: linux/amd64
+
+      - name: Create GitHub Release
+        if: steps.check_image.outputs.needs_build == 'true'
+        uses: softprops/action-gh-release@v1
+        with:
+          tag_name: ${{ steps.orca_release.outputs.latest_version }}
+          name: OrcaSlicer ${{ steps.orca_release.outputs.latest_version }}
+          body: |
+            ## Docker Image for OrcaSlicer ${{ steps.orca_release.outputs.latest_version }}
+            
+            ### Pull the image
+            ```bash
+            docker pull ghcr.io/${{ env.IMAGE_NAME }}:${{ steps.orca_release.outputs.latest_version }}
+            ```
+            
+            Or use the latest tag:
+            ```bash
+            docker pull ghcr.io/${{ env.IMAGE_NAME }}:latest
+            ```
+            
+            ### Changes
+            See the [OrcaSlicer release notes](https://github.com/SoftFever/OrcaSlicer/releases/tag/${{ steps.orca_release.outputs.latest_version }}) for details.
+            
+            ### Fork Enhancements
+            - Intel iGPU optimizations (VA-API, Mesa iris driver)
+            - Stability watchdog for automatic hang recovery
+            - Memory management improvements
+          draft: false
+          prerelease: false
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Summary
+        run: |
+          echo "## Check OrcaSlicer Release Summary" >> $GITHUB_STEP_SUMMARY
+          echo "- **Latest OrcaSlicer Version:** ${{ steps.orca_release.outputs.latest_version }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Needs Build:** ${{ steps.check_image.outputs.needs_build }}" >> $GITHUB_STEP_SUMMARY
+          if [ "${{ steps.check_image.outputs.needs_build }}" = "true" ]; then
+            echo "- **Action:** Built and pushed new image" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "- **Action:** No build needed, image already exists" >> $GITHUB_STEP_SUMMARY
+          fi

@@ -1,0 +1,66 @@
+#!/bin/bash
+
+# OrcaSlicer Wrapper with Intel iGPU stability improvements
+# This wrapper manages memory and prevents hangs during settings changes
+
+# Source Intel GPU environment
+if [ -f /etc/profile.d/intel-gpu.sh ]; then
+    source /etc/profile.d/intel-gpu.sh
+fi
+
+# Set process limits to prevent runaway memory usage
+ulimit -v 8388608  # 8GB virtual memory limit
+ulimit -m 4194304  # 4GB resident memory limit
+
+# Create lock file for single instance
+LOCK_FILE="/tmp/orcaslicer.lock"
+exec 200>"$LOCK_FILE"
+flock -n 200 || {
+    echo "OrcaSlicer is already running"
+    exit 1
+}
+
+# Cleanup function
+cleanup() {
+    echo "Cleaning up OrcaSlicer..."
+    # Clear Mesa shader cache if it gets too large (>1GB)
+    CACHE_SIZE=$(du -sm /config/.cache/mesa_shader_cache 2>/dev/null | cut -f1)
+    if [ "${CACHE_SIZE:-0}" -gt 1024 ]; then
+        echo "Clearing oversized shader cache..."
+        rm -rf /config/.cache/mesa_shader_cache/*
+    fi
+    
+    # Trigger memory cleanup
+    sync
+    echo 1 > /proc/sys/vm/drop_caches 2>/dev/null || true
+    
+    rm -f "$LOCK_FILE"
+}
+
+trap cleanup EXIT INT TERM
+
+# Pre-launch memory cleanup
+sync
+echo 1 > /proc/sys/vm/drop_caches 2>/dev/null || true
+
+# Log GPU status
+echo "Starting OrcaSlicer with Intel iGPU optimizations..."
+echo "DRI_NODE: ${DRI_NODE:-not set}"
+echo "DRINODE: ${DRINODE:-not set}"
+echo "MESA_LOADER_DRIVER_OVERRIDE: ${MESA_LOADER_DRIVER_OVERRIDE:-not set}"
+
+# Launch OrcaSlicer with optimized settings
+cd /opt/orcaslicer
+
+# Set additional runtime optimizations
+export QT_QPA_PLATFORM=xcb
+export QT_SCALE_FACTOR=1
+export GDK_BACKEND=x11
+
+# Disable GPU-intensive features that cause hangs
+export ORCA_DISABLE_GPU_PREVIEW=0
+export __GL_SYNC_TO_VBLANK=0
+export __GL_YIELD="USLEEP"
+
+# Run OrcaSlicer
+exec /opt/orcaslicer/AppRun "$@"

@@ -1,0 +1,84 @@
+#!/usr/bin/with-contenv bash
+
+# Intel iGPU initialization script for OrcaSlicer stability
+
+echo "**** Initializing Intel iGPU optimizations ****"
+
+# Detect Intel GPU
+if [ -d /dev/dri ]; then
+    echo "**** DRI devices found ****"
+    ls -la /dev/dri/
+    
+    # Check for Intel GPU via render nodes
+    for rendernode in /dev/dri/renderD*; do
+        if [ -e "$rendernode" ]; then
+            echo "**** Found render node: $rendernode ****"
+        fi
+    done
+    
+    # Set permissions for render devices
+    if [ -e /dev/dri/renderD128 ]; then
+        chmod 666 /dev/dri/renderD128 2>/dev/null || true
+    fi
+    if [ -e /dev/dri/card0 ]; then
+        chmod 666 /dev/dri/card0 2>/dev/null || true
+    fi
+fi
+
+# Create Mesa shader cache directory with proper permissions
+SHADER_CACHE_DIR="/config/.cache/mesa_shader_cache"
+mkdir -p "$SHADER_CACHE_DIR"
+chown -R abc:abc "$SHADER_CACHE_DIR"
+
+# Create OrcaSlicer cache directory
+ORCA_CACHE_DIR="/config/.cache/orcaslicer"
+mkdir -p "$ORCA_CACHE_DIR"
+chown -R abc:abc "$ORCA_CACHE_DIR"
+
+# Set Intel-specific environment in profile
+cat > /etc/profile.d/intel-gpu.sh << 'EOF'
+# Intel iGPU optimizations for OrcaSlicer
+export MESA_LOADER_DRIVER_OVERRIDE=iris
+export INTEL_DEBUG=norbc
+export vblank_mode=0
+export MESA_GL_VERSION_OVERRIDE=4.5
+export MESA_GLSL_VERSION_OVERRIDE=450
+export LIBGL_DRI3_DISABLE=0
+export MESA_SHADER_CACHE_MAX_SIZE=512M
+export MESA_SHADER_CACHE_DIR="/config/.cache/mesa_shader_cache"
+
+# Memory optimizations to prevent hangs
+export MALLOC_TRIM_THRESHOLD_=131072
+export MALLOC_MMAP_THRESHOLD_=131072
+export MALLOC_TOP_PAD_=131072
+export MALLOC_MMAP_MAX_=65536
+
+# Disable threaded GL to prevent race conditions
+export mesa_glthread=false
+
+# Force software cursor to reduce GPU load
+export XCURSOR_SIZE=24
+
+# Intel VA-API settings
+export LIBVA_DRIVER_NAME=iHD
+export LIBVA_DRIVERS_PATH=/usr/lib/x86_64-linux-gnu/dri
+
+# Reduce OpenGL buffer sizes for stability
+export __GL_MaxFramesAllowed=1
+EOF
+
+chmod 644 /etc/profile.d/intel-gpu.sh
+
+# Verify VA-API is working
+echo "**** Checking VA-API status ****"
+if command -v vainfo &> /dev/null; then
+    vainfo 2>&1 || echo "VA-API check completed (errors may be normal without display)"
+fi
+
+# Check OpenGL status
+echo "**** Checking OpenGL status ****"
+if command -v glxinfo &> /dev/null; then
+    glxinfo -B 2>&1 | head -20 || echo "GLX check completed"
+fi
+
+echo "**** Intel iGPU initialization complete ****"
