@@ -7,9 +7,9 @@
 
 > **Fork of [linuxserver/docker-orcaslicer](https://github.com/linuxserver/docker-orcaslicer)** with Intel iGPU optimizations, stability improvements, and automatic OrcaSlicer version updates.
 
-[OrcaSlicer](https://github.com/SoftFever/OrcaSlicer) is an open source slicer for FDM printers. This Docker container provides a web-based GUI to run OrcaSlicer in your browser.
+[OrcaSlicer](https://github.com/OrcaSlicer/OrcaSlicer) is an open source slicer for FDM printers. This Docker container provides a web-based GUI to run OrcaSlicer in your browser.
 
-[![orcaslicer](https://raw.githubusercontent.com/linuxserver/docker-templates/master/linuxserver.io/img/orcaslicer-logo.png)](https://github.com/SoftFever/OrcaSlicer)
+[![orcaslicer](https://raw.githubusercontent.com/linuxserver/docker-templates/master/linuxserver.io/img/orcaslicer-logo.png)](https://github.com/OrcaSlicer/OrcaSlicer)
 
 ## Features (Fork Enhancements)
 
@@ -240,7 +240,7 @@ This repository uses GitHub Actions to automatically:
 ## Credits
 
 - Original container by [LinuxServer.io](https://linuxserver.io)
-- [OrcaSlicer](https://github.com/SoftFever/OrcaSlicer) by SoftFever
+- [OrcaSlicer](https://github.com/OrcaSlicer/OrcaSlicer) by OrcaSlicer Team
 - Base image: [docker-baseimage-selkies](https://github.com/linuxserver/docker-baseimage-selkies)
 
 ## License

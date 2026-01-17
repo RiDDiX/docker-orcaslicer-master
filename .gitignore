@@ -1,1 +1,16 @@
+# Build artifacts
 .jenkins-external
+*.log
+
+# Config directory (local testing)
+config/
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo

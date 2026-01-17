@@ -39,7 +39,7 @@ jobs:
           if [ -n "${{ github.event.inputs.orcaslicer_version }}" ]; then
             VERSION="${{ github.event.inputs.orcaslicer_version }}"
           else
-            VERSION=$(curl -sX GET "https://api.github.com/repos/SoftFever/OrcaSlicer/releases/latest" | jq -r '.tag_name')
+            VERSION=$(curl -sX GET "https://api.github.com/repos/OrcaSlicer/OrcaSlicer/releases/latest" | jq -r '.tag_name')
           fi
           echo "version=${VERSION}" >> $GITHUB_OUTPUT
           echo "OrcaSlicer version: ${VERSION}"

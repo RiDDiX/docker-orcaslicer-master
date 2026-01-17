@@ -24,7 +24,7 @@ jobs:
       - name: Get latest OrcaSlicer release
         id: orca_release
         run: |
-          LATEST_VERSION=$(curl -sX GET "https://api.github.com/repos/SoftFever/OrcaSlicer/releases/latest" | jq -r '.tag_name')
+          LATEST_VERSION=$(curl -sX GET "https://api.github.com/repos/OrcaSlicer/OrcaSlicer/releases/latest" | jq -r '.tag_name')
           echo "latest_version=${LATEST_VERSION}" >> $GITHUB_OUTPUT
           echo "Latest OrcaSlicer version: ${LATEST_VERSION}"
 
@@ -102,7 +102,7 @@ jobs:
             ```
             
             ### Changes
-            See the [OrcaSlicer release notes](https://github.com/SoftFever/OrcaSlicer/releases/tag/${{ steps.orca_release.outputs.latest_version }}) for details.
+            See the [OrcaSlicer release notes](https://github.com/OrcaSlicer/OrcaSlicer/releases/tag/${{ steps.orca_release.outputs.latest_version }}) for details.
             
             ### Fork Enhancements
             - Intel iGPU optimizations (VA-API, Mesa iris driver)
