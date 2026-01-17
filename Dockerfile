@@ -104,6 +104,7 @@ COPY /root /
 
 # make scripts executable
 RUN chmod +x /usr/local/bin/orcaslicer-wrapper && \
+    chmod +x /etc/s6-overlay/s6-rc.d/init-orcaslicer-config/run && \
     chmod +x /etc/s6-overlay/s6-rc.d/init-intel-gpu/run && \
     chmod +x /etc/s6-overlay/s6-rc.d/svc-orca-watchdog/run
 

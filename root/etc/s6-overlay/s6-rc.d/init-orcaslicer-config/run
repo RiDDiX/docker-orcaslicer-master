@@ -1,0 +1,15 @@
+#!/usr/bin/with-contenv bash
+
+# Initialize OrcaSlicer config directory structure
+echo "**** Initializing OrcaSlicer config directories ****"
+
+# Create necessary directories in /config
+mkdir -p /config/.config/OrcaSlicer
+mkdir -p /config/.cache/mesa_shader_cache
+mkdir -p /config/.cache/orcaslicer
+mkdir -p /config/.local/share
+
+# Set proper ownership for abc user (LinuxServer standard user)
+chown -R abc:abc /config
+
+echo "**** OrcaSlicer config directories initialized ****"
