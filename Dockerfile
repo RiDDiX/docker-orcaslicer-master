@@ -77,26 +77,30 @@ RUN \
   echo "**** install orcaslicer from appimage ****" && \
   if [ -z "${ORCASLICER_VERSION}" ] || [ "${ORCASLICER_VERSION}" = "latest" ]; then \
     echo "Fetching latest stable release..." && \
-    RELEASE_DATA=$(curl -sX GET "https://api.github.com/repos/OrcaSlicer/OrcaSlicer/releases/latest" | tr -d '\000-\037'); \
+    curl -sX GET "https://api.github.com/repos/OrcaSlicer/OrcaSlicer/releases/latest" -o /tmp/release.json && \
+    sed -i 's/[\x00-\x1F]//g' /tmp/release.json; \
   elif [ "${ORCASLICER_VERSION}" = "nightly" ]; then \
     echo "Fetching latest nightly/pre-release..." && \
-    RELEASE_DATA=$(curl -sX GET "https://api.github.com/repos/OrcaSlicer/OrcaSlicer/releases" | tr -d '\000-\037' | jq '[.[] | select(.prerelease == true)] | first'); \
+    curl -sX GET "https://api.github.com/repos/OrcaSlicer/OrcaSlicer/releases" -o /tmp/releases.json && \
+    sed -i 's/[\x00-\x1F]//g' /tmp/releases.json && \
+    jq '[.[] | select(.prerelease == true)] | first' /tmp/releases.json > /tmp/release.json; \
   else \
     echo "Fetching specific version: ${ORCASLICER_VERSION}..." && \
-    RELEASE_DATA=$(curl -sX GET "https://api.github.com/repos/OrcaSlicer/OrcaSlicer/releases/tags/${ORCASLICER_VERSION}" | tr -d '\000-\037'); \
+    curl -sX GET "https://api.github.com/repos/OrcaSlicer/OrcaSlicer/releases/tags/${ORCASLICER_VERSION}" -o /tmp/release.json && \
+    sed -i 's/[\x00-\x1F]//g' /tmp/release.json; \
   fi && \
-  echo "Release data tag: $(echo "$RELEASE_DATA" | jq -r '.tag_name')" && \
-  if [ -z "$RELEASE_DATA" ] || [ "$(echo "$RELEASE_DATA" | jq -r '.tag_name')" = "null" ]; then \
+  ORCASLICER_VERSION=$(jq -r '.tag_name' /tmp/release.json) && \
+  echo "Release data tag: ${ORCASLICER_VERSION}" && \
+  if [ -z "$ORCASLICER_VERSION" ] || [ "$ORCASLICER_VERSION" = "null" ]; then \
     echo "ERROR: Could not find release data" && exit 1; \
   fi && \
-  ORCASLICER_VERSION=$(echo "$RELEASE_DATA" | jq -r '.tag_name') && \
   echo "Installing OrcaSlicer version: ${ORCASLICER_VERSION}" && \
   echo "Available assets:" && \
-  echo "$RELEASE_DATA" | jq -r '.assets[].name' && \
-  DOWNLOAD_URL=$(echo "$RELEASE_DATA" | jq -r '.assets[] | select(.name | contains("Ubuntu2404") or contains("Ubuntu24.04")) | select(.name | contains("AppImage")) | .browser_download_url' | head -1) && \
+  jq -r '.assets[].name' /tmp/release.json && \
+  DOWNLOAD_URL=$(jq -r '.assets[] | select(.name | contains("Ubuntu2404") or contains("Ubuntu24.04")) | select(.name | contains("AppImage")) | .browser_download_url' /tmp/release.json | head -1) && \
   if [ -z "$DOWNLOAD_URL" ] || [ "$DOWNLOAD_URL" = "null" ] || [ "$DOWNLOAD_URL" = "" ]; then \
     echo "Trying fallback: Linux AppImage..." && \
-    DOWNLOAD_URL=$(echo "$RELEASE_DATA" | jq -r '.assets[] | select(.name | contains("Linux")) | select(.name | contains("AppImage")) | .browser_download_url' | head -1); \
+    DOWNLOAD_URL=$(jq -r '.assets[] | select(.name | contains("Linux")) | select(.name | contains("AppImage")) | .browser_download_url' /tmp/release.json | head -1); \
   fi && \
   if [ -z "$DOWNLOAD_URL" ] || [ "$DOWNLOAD_URL" = "null" ] || [ "$DOWNLOAD_URL" = "" ]; then \
     echo "ERROR: Could not find download URL for Linux AppImage" && exit 1; \
