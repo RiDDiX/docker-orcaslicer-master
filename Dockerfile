@@ -77,13 +77,13 @@ RUN \
   echo "**** install orcaslicer from appimage ****" && \
   if [ -z "${ORCASLICER_VERSION}" ] || [ "${ORCASLICER_VERSION}" = "latest" ]; then \
     echo "Fetching latest stable release..." && \
-    RELEASE_DATA=$(curl -sX GET "https://api.github.com/repos/OrcaSlicer/OrcaSlicer/releases/latest"); \
+    RELEASE_DATA=$(curl -sX GET "https://api.github.com/repos/OrcaSlicer/OrcaSlicer/releases/latest" | tr -d '\000-\037'); \
   elif [ "${ORCASLICER_VERSION}" = "nightly" ]; then \
     echo "Fetching latest nightly/pre-release..." && \
-    RELEASE_DATA=$(curl -sX GET "https://api.github.com/repos/OrcaSlicer/OrcaSlicer/releases" | jq '[.[] | select(.prerelease == true)] | first'); \
+    RELEASE_DATA=$(curl -sX GET "https://api.github.com/repos/OrcaSlicer/OrcaSlicer/releases" | tr -d '\000-\037' | jq '[.[] | select(.prerelease == true)] | first'); \
   else \
     echo "Fetching specific version: ${ORCASLICER_VERSION}..." && \
-    RELEASE_DATA=$(curl -sX GET "https://api.github.com/repos/OrcaSlicer/OrcaSlicer/releases/tags/${ORCASLICER_VERSION}"); \
+    RELEASE_DATA=$(curl -sX GET "https://api.github.com/repos/OrcaSlicer/OrcaSlicer/releases/tags/${ORCASLICER_VERSION}" | tr -d '\000-\037'); \
   fi && \
   echo "Release data tag: $(echo "$RELEASE_DATA" | jq -r '.tag_name')" && \
   if [ -z "$RELEASE_DATA" ] || [ "$(echo "$RELEASE_DATA" | jq -r '.tag_name')" = "null" ]; then \
