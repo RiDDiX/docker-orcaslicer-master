@@ -75,12 +75,27 @@ RUN \
     libwebkit2gtk-4.1-0 \
     libwx-perl && \
   echo "**** install orcaslicer from appimage ****" && \
-  if [ -z ${ORCASLICER_VERSION+x} ]; then \
-    ORCASLICER_VERSION=$(curl -sX GET "https://api.github.com/repos/OrcaSlicer/OrcaSlicer/releases/latest" \
-    | awk '/tag_name/{print $4;exit}' FS='[""]'); \
+  if [ -z "${ORCASLICER_VERSION}" ] || [ "${ORCASLICER_VERSION}" = "latest" ]; then \
+    echo "Fetching latest stable release..." && \
+    RELEASE_DATA=$(curl -sX GET "https://api.github.com/repos/OrcaSlicer/OrcaSlicer/releases/latest") && \
+    ORCASLICER_VERSION=$(echo "$RELEASE_DATA" | jq -r '.tag_name'); \
+  elif [ "${ORCASLICER_VERSION}" = "nightly" ]; then \
+    echo "Fetching latest nightly/pre-release..." && \
+    RELEASE_DATA=$(curl -sX GET "https://api.github.com/repos/OrcaSlicer/OrcaSlicer/releases" | jq -r '[.[] | select(.prerelease == true)] | first'); \
+  else \
+    echo "Fetching specific version: ${ORCASLICER_VERSION}..." && \
+    RELEASE_DATA=$(curl -sX GET "https://api.github.com/repos/OrcaSlicer/OrcaSlicer/releases/tags/${ORCASLICER_VERSION}"); \
   fi && \
-  RELEASE_URL=$(curl -sX GET "https://api.github.com/repos/OrcaSlicer/OrcaSlicer/releases/latest"     | awk '/url/{print $4;exit}' FS='[""]') && \
-  DOWNLOAD_URL=$(curl -sX GET "${RELEASE_URL}" | awk '/browser_download_url.*Ubuntu2404/{print $4;exit}' FS='[""]') && \
+  if [ -z "$RELEASE_DATA" ] || [ "$RELEASE_DATA" = "null" ]; then \
+    echo "ERROR: Could not find release data" && exit 1; \
+  fi && \
+  ORCASLICER_VERSION=$(echo "$RELEASE_DATA" | jq -r '.tag_name') && \
+  echo "Installing OrcaSlicer version: ${ORCASLICER_VERSION}" && \
+  DOWNLOAD_URL=$(echo "$RELEASE_DATA" | jq -r '.assets[] | select(.name | test("Ubuntu.*24.04|Ubuntu2404")) | .browser_download_url' | head -1) && \
+  if [ -z "$DOWNLOAD_URL" ] || [ "$DOWNLOAD_URL" = "null" ]; then \
+    DOWNLOAD_URL=$(echo "$RELEASE_DATA" | jq -r '.assets[] | select(.name | test("Linux.*AppImage|linux.*appimage"; "i")) | .browser_download_url' | head -1); \
+  fi && \
+  echo "Download URL: ${DOWNLOAD_URL}" && \
   cd /tmp && \
   curl -o \
     /tmp/orca.app -L \

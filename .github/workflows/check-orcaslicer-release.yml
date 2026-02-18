@@ -2,38 +2,51 @@ name: Check OrcaSlicer Release
 
 on:
   schedule:
-    # Run daily at 6:00 UTC
-    - cron: '0 6 * * *'
+    # Check for new releases every 6 hours
+    - cron: '0 */6 * * *'
   workflow_dispatch:
+    inputs:
+      check_type:
+        description: 'Which release types to check'
+        required: true
+        default: 'all'
+        type: choice
+        options:
+          - all
+          - latest
+          - nightly
 
 env:
   REGISTRY: ghcr.io
   IMAGE_NAME: riddix/orcaslicer
 
 jobs:
-  check-and-build:
+  check-latest:
     runs-on: ubuntu-latest
     permissions:
       contents: write
       packages: write
+    outputs:
+      version: ${{ steps.orca_release.outputs.version }}
+      needs_build: ${{ steps.check_image.outputs.needs_build }}
 
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Get latest OrcaSlicer release
+      - name: Get latest stable OrcaSlicer release
         id: orca_release
         run: |
-          LATEST_VERSION=$(curl -sX GET "https://api.github.com/repos/SoftFever/OrcaSlicer/releases/latest" | jq -r '.tag_name')
-          echo "latest_version=${LATEST_VERSION}" >> $GITHUB_OUTPUT
-          echo "Latest OrcaSlicer version: ${LATEST_VERSION}"
+          RELEASE_DATA=$(curl -sX GET "https://api.github.com/repos/OrcaSlicer/OrcaSlicer/releases/latest")
+          VERSION=$(echo "$RELEASE_DATA" | jq -r '.tag_name')
+          echo "version=${VERSION}" >> $GITHUB_OUTPUT
+          echo "Latest stable OrcaSlicer version: ${VERSION}"
 
       - name: Check if image exists with this version
         id: check_image
         run: |
-          VERSION="${{ steps.orca_release.outputs.latest_version }}"
+          VERSION="${{ steps.orca_release.outputs.version }}"
           
-          # Try to get the manifest for this version tag
           TOKEN=$(curl -s "https://ghcr.io/token?scope=repository:${{ env.IMAGE_NAME }}:pull" | jq -r '.token')
           
           RESPONSE=$(curl -s -o /dev/null -w "%{http_code}" \
@@ -65,7 +78,7 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Build and push Docker image
+      - name: Build and push Docker image (latest)
         if: steps.check_image.outputs.needs_build == 'true'
         uses: docker/build-push-action@v5
         with:
@@ -73,36 +86,35 @@ jobs:
           push: true
           tags: |
             ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:latest
-            ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ steps.orca_release.outputs.latest_version }}
+            ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ steps.orca_release.outputs.version }}
           build-args: |
             BUILD_DATE=${{ github.event.repository.updated_at }}
-            VERSION=${{ steps.orca_release.outputs.latest_version }}-ls1
-            ORCASLICER_VERSION=${{ steps.orca_release.outputs.latest_version }}
+            VERSION=${{ steps.orca_release.outputs.version }}
+            ORCASLICER_VERSION=${{ steps.orca_release.outputs.version }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
           platforms: linux/amd64
 
-      - name: Create GitHub Release
+      - name: Create GitHub Release (stable)
         if: steps.check_image.outputs.needs_build == 'true'
         uses: softprops/action-gh-release@v1
         with:
-          tag_name: ${{ steps.orca_release.outputs.latest_version }}
-          name: OrcaSlicer ${{ steps.orca_release.outputs.latest_version }}
+          tag_name: ${{ steps.orca_release.outputs.version }}
+          name: OrcaSlicer ${{ steps.orca_release.outputs.version }}
           body: |
-            ## Docker Image for OrcaSlicer ${{ steps.orca_release.outputs.latest_version }}
+            ## Docker Image for OrcaSlicer ${{ steps.orca_release.outputs.version }}
+            
+            **Release Type:** Stable
             
             ### Pull the image
             ```bash
-            docker pull ghcr.io/${{ env.IMAGE_NAME }}:${{ steps.orca_release.outputs.latest_version }}
+            docker pull ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ steps.orca_release.outputs.version }}
+            # or
+            docker pull ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:latest
             ```
             
-            Or use the latest tag:
-            ```bash
-            docker pull ghcr.io/${{ env.IMAGE_NAME }}:latest
-            ```
-            
-            ### Changes
-            See the [OrcaSlicer release notes](https://github.com/SoftFever/OrcaSlicer/releases/tag/${{ steps.orca_release.outputs.latest_version }}) for details.
+            ### OrcaSlicer Release Notes
+            See [OrcaSlicer ${{ steps.orca_release.outputs.version }}](https://github.com/OrcaSlicer/OrcaSlicer/releases/tag/${{ steps.orca_release.outputs.version }}) for details.
             
             ### Fork Enhancements
             - Intel iGPU optimizations (VA-API, Mesa iris driver)
@@ -113,13 +125,132 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
+  check-nightly:
+    runs-on: ubuntu-latest
+    if: github.event.inputs.check_type == 'all' || github.event.inputs.check_type == 'nightly' || github.event_name == 'schedule'
+    permissions:
+      contents: write
+      packages: write
+    outputs:
+      version: ${{ steps.orca_release.outputs.version }}
+      needs_build: ${{ steps.check_image.outputs.needs_build }}
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Get latest nightly/pre-release
+        id: orca_release
+        run: |
+          # Get latest pre-release
+          RELEASE_DATA=$(curl -sX GET "https://api.github.com/repos/OrcaSlicer/OrcaSlicer/releases" | jq -r '[.[] | select(.prerelease == true)] | first')
+          
+          if [ "$RELEASE_DATA" = "null" ] || [ -z "$RELEASE_DATA" ]; then
+            echo "No pre-release found"
+            echo "version=" >> $GITHUB_OUTPUT
+            exit 0
+          fi
+          
+          VERSION=$(echo "$RELEASE_DATA" | jq -r '.tag_name')
+          echo "version=${VERSION}" >> $GITHUB_OUTPUT
+          echo "Latest nightly/pre-release version: ${VERSION}"
+
+      - name: Check if nightly image exists
+        id: check_image
+        if: steps.orca_release.outputs.version != ''
+        run: |
+          VERSION="${{ steps.orca_release.outputs.version }}"
+          
+          TOKEN=$(curl -s "https://ghcr.io/token?scope=repository:${{ env.IMAGE_NAME }}:pull" | jq -r '.token')
+          
+          RESPONSE=$(curl -s -o /dev/null -w "%{http_code}" \
+            -H "Authorization: Bearer ${TOKEN}" \
+            -H "Accept: application/vnd.docker.distribution.manifest.v2+json" \
+            "https://ghcr.io/v2/${{ env.IMAGE_NAME }}/manifests/${VERSION}")
+          
+          if [ "$RESPONSE" = "200" ]; then
+            echo "Nightly image with version ${VERSION} already exists"
+            echo "needs_build=false" >> $GITHUB_OUTPUT
+          else
+            echo "Nightly image with version ${VERSION} does not exist, triggering build"
+            echo "needs_build=true" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Set up QEMU
+        if: steps.check_image.outputs.needs_build == 'true'
+        uses: docker/setup-qemu-action@v3
+
+      - name: Set up Docker Buildx
+        if: steps.check_image.outputs.needs_build == 'true'
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GitHub Container Registry
+        if: steps.check_image.outputs.needs_build == 'true'
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push Docker image (nightly)
+        if: steps.check_image.outputs.needs_build == 'true'
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          push: true
+          tags: |
+            ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:nightly
+            ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ steps.orca_release.outputs.version }}
+          build-args: |
+            BUILD_DATE=${{ github.event.repository.updated_at }}
+            VERSION=${{ steps.orca_release.outputs.version }}
+            ORCASLICER_VERSION=${{ steps.orca_release.outputs.version }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+          platforms: linux/amd64
+
+      - name: Create GitHub Release (nightly)
+        if: steps.check_image.outputs.needs_build == 'true'
+        uses: softprops/action-gh-release@v1
+        with:
+          tag_name: ${{ steps.orca_release.outputs.version }}
+          name: OrcaSlicer ${{ steps.orca_release.outputs.version }} (Nightly)
+          body: |
+            ## Docker Image for OrcaSlicer ${{ steps.orca_release.outputs.version }}
+            
+            **Release Type:** Nightly / Pre-release
+            
+            ⚠️ **Warning:** This is a pre-release build and may be unstable.
+            
+            ### Pull the image
+            ```bash
+            docker pull ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ steps.orca_release.outputs.version }}
+            # or for latest nightly
+            docker pull ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:nightly
+            ```
+            
+            ### OrcaSlicer Release Notes
+            See [OrcaSlicer ${{ steps.orca_release.outputs.version }}](https://github.com/OrcaSlicer/OrcaSlicer/releases/tag/${{ steps.orca_release.outputs.version }}) for details.
+            
+            ### Fork Enhancements
+            - Intel iGPU optimizations (VA-API, Mesa iris driver)
+            - Stability watchdog for automatic hang recovery
+            - Memory management improvements
+          draft: false
+          prerelease: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  summary:
+    runs-on: ubuntu-latest
+    needs: [check-latest, check-nightly]
+    if: always()
+    steps:
       - name: Summary
         run: |
-          echo "## Check OrcaSlicer Release Summary" >> $GITHUB_STEP_SUMMARY
-          echo "- **Latest OrcaSlicer Version:** ${{ steps.orca_release.outputs.latest_version }}" >> $GITHUB_STEP_SUMMARY
-          echo "- **Needs Build:** ${{ steps.check_image.outputs.needs_build }}" >> $GITHUB_STEP_SUMMARY
-          if [ "${{ steps.check_image.outputs.needs_build }}" = "true" ]; then
-            echo "- **Action:** Built and pushed new image" >> $GITHUB_STEP_SUMMARY
-          else
-            echo "- **Action:** No build needed, image already exists" >> $GITHUB_STEP_SUMMARY
-          fi
+          echo "## OrcaSlicer Release Check Summary" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "| Release Type | Version | Build Triggered |" >> $GITHUB_STEP_SUMMARY
+          echo "|--------------|---------|-----------------|" >> $GITHUB_STEP_SUMMARY
+          echo "| **Latest (Stable)** | ${{ needs.check-latest.outputs.version || 'N/A' }} | ${{ needs.check-latest.outputs.needs_build || 'skipped' }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| **Nightly** | ${{ needs.check-nightly.outputs.version || 'N/A' }} | ${{ needs.check-nightly.outputs.needs_build || 'skipped' }} |" >> $GITHUB_STEP_SUMMARY

@@ -5,16 +5,24 @@ on:
     branches:
       - master
       - main
-    tags:
-      - 'v*'
   pull_request:
     branches:
       - master
       - main
   workflow_dispatch:
     inputs:
-      orcaslicer_version:
-        description: 'OrcaSlicer version to build (leave empty for latest)'
+      release_type:
+        description: 'OrcaSlicer Release Type'
+        required: true
+        default: 'latest'
+        type: choice
+        options:
+          - latest
+          - nightly
+          - beta
+          - custom
+      custom_version:
+        description: 'Custom version tag (only used if release_type is "custom", e.g., v2.3.0-beta2)'
         required: false
         default: ''
 
@@ -26,7 +34,7 @@ jobs:
   build-and-push:
     runs-on: ubuntu-latest
     permissions:
-      contents: read
+      contents: write
       packages: write
 
     steps:
@@ -36,13 +44,43 @@ jobs:
       - name: Get OrcaSlicer version
         id: orca_version
         run: |
-          if [ -n "${{ github.event.inputs.orcaslicer_version }}" ]; then
-            VERSION="${{ github.event.inputs.orcaslicer_version }}"
+          RELEASE_TYPE="${{ github.event.inputs.release_type || 'latest' }}"
+          CUSTOM_VERSION="${{ github.event.inputs.custom_version }}"
+          
+          echo "Release type: ${RELEASE_TYPE}"
+          
+          if [ "$RELEASE_TYPE" = "custom" ] && [ -n "$CUSTOM_VERSION" ]; then
+            # Custom version specified
+            VERSION="$CUSTOM_VERSION"
+            RELEASE_DATA=$(curl -sX GET "https://api.github.com/repos/OrcaSlicer/OrcaSlicer/releases/tags/${VERSION}")
+            IS_PRERELEASE=$(echo "$RELEASE_DATA" | jq -r '.prerelease')
+          elif [ "$RELEASE_TYPE" = "nightly" ]; then
+            # Get latest pre-release (nightly)
+            RELEASE_DATA=$(curl -sX GET "https://api.github.com/repos/OrcaSlicer/OrcaSlicer/releases" | jq -r '[.[] | select(.prerelease == true and (.tag_name | test("nightly|Nightly"; "i")))] | first')
+            if [ "$RELEASE_DATA" = "null" ] || [ -z "$RELEASE_DATA" ]; then
+              # Fallback: get any prerelease
+              RELEASE_DATA=$(curl -sX GET "https://api.github.com/repos/OrcaSlicer/OrcaSlicer/releases" | jq -r '[.[] | select(.prerelease == true)] | first')
+            fi
+            VERSION=$(echo "$RELEASE_DATA" | jq -r '.tag_name')
+            IS_PRERELEASE="true"
+          elif [ "$RELEASE_TYPE" = "beta" ]; then
+            # Get latest beta release
+            RELEASE_DATA=$(curl -sX GET "https://api.github.com/repos/OrcaSlicer/OrcaSlicer/releases" | jq -r '[.[] | select(.prerelease == true and (.tag_name | test("beta|Beta|alpha|Alpha"; "i")))] | first')
+            VERSION=$(echo "$RELEASE_DATA" | jq -r '.tag_name')
+            IS_PRERELEASE="true"
           else
-            VERSION=$(curl -sX GET "https://api.github.com/repos/SoftFever/OrcaSlicer/releases/latest" | jq -r '.tag_name')
+            # Get latest stable release
+            RELEASE_DATA=$(curl -sX GET "https://api.github.com/repos/OrcaSlicer/OrcaSlicer/releases/latest")
+            VERSION=$(echo "$RELEASE_DATA" | jq -r '.tag_name')
+            IS_PRERELEASE="false"
           fi
-          echo "version=${VERSION}" >> $GITHUB_OUTPUT
+          
           echo "OrcaSlicer version: ${VERSION}"
+          echo "Is prerelease: ${IS_PRERELEASE}"
+          
+          echo "version=${VERSION}" >> $GITHUB_OUTPUT
+          echo "release_type=${RELEASE_TYPE}" >> $GITHUB_OUTPUT
+          echo "is_prerelease=${IS_PRERELEASE}" >> $GITHUB_OUTPUT
 
       - name: Set up QEMU
         uses: docker/setup-qemu-action@v3
@@ -58,36 +96,87 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Extract metadata for Docker
-        id: meta
-        uses: docker/metadata-action@v5
-        with:
-          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
-          tags: |
-            type=raw,value=latest,enable={{is_default_branch}}
-            type=raw,value=${{ steps.orca_version.outputs.version }}
-            type=sha,prefix=
-            type=ref,event=branch
-            type=ref,event=pr
+      - name: Generate Docker tags
+        id: tags
+        run: |
+          VERSION="${{ steps.orca_version.outputs.version }}"
+          RELEASE_TYPE="${{ steps.orca_version.outputs.release_type }}"
+          IS_PRERELEASE="${{ steps.orca_version.outputs.is_prerelease }}"
+          
+          TAGS="${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${VERSION}"
+          
+          # Add release-type specific tags
+          if [ "$RELEASE_TYPE" = "latest" ] || [ "$IS_PRERELEASE" = "false" ]; then
+            TAGS="${TAGS},${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:latest"
+          fi
+          
+          if [ "$RELEASE_TYPE" = "nightly" ]; then
+            TAGS="${TAGS},${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:nightly"
+          fi
+          
+          if [ "$RELEASE_TYPE" = "beta" ]; then
+            TAGS="${TAGS},${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:beta"
+          fi
+          
+          echo "tags=${TAGS}" >> $GITHUB_OUTPUT
+          echo "Generated tags: ${TAGS}"
 
       - name: Build and push Docker image
         uses: docker/build-push-action@v5
         with:
           context: .
           push: ${{ github.event_name != 'pull_request' }}
-          tags: ${{ steps.meta.outputs.tags }}
-          labels: ${{ steps.meta.outputs.labels }}
+          tags: ${{ steps.tags.outputs.tags }}
           build-args: |
             BUILD_DATE=${{ github.event.repository.updated_at }}
-            VERSION=${{ steps.orca_version.outputs.version }}-ls1
+            VERSION=${{ steps.orca_version.outputs.version }}
             ORCASLICER_VERSION=${{ steps.orca_version.outputs.version }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
           platforms: linux/amd64
 
+      - name: Create GitHub Release
+        if: github.event_name == 'workflow_dispatch' && github.event.inputs.release_type != ''
+        uses: softprops/action-gh-release@v1
+        with:
+          tag_name: ${{ steps.orca_version.outputs.version }}
+          name: OrcaSlicer ${{ steps.orca_version.outputs.version }}
+          body: |
+            ## Docker Image for OrcaSlicer ${{ steps.orca_version.outputs.version }}
+            
+            **Release Type:** ${{ steps.orca_version.outputs.release_type }}
+            
+            ### Pull the image
+            ```bash
+            docker pull ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ steps.orca_version.outputs.version }}
+            ```
+            
+            ### Available Tags
+            - `${{ steps.orca_version.outputs.version }}` - This specific version
+            ${{ steps.orca_version.outputs.release_type == 'latest' && '- `latest` - Latest stable release' || '' }}
+            ${{ steps.orca_version.outputs.release_type == 'nightly' && '- `nightly` - Latest nightly build' || '' }}
+            ${{ steps.orca_version.outputs.release_type == 'beta' && '- `beta` - Latest beta release' || '' }}
+            
+            ### OrcaSlicer Release Notes
+            See [OrcaSlicer ${{ steps.orca_version.outputs.version }}](https://github.com/OrcaSlicer/OrcaSlicer/releases/tag/${{ steps.orca_version.outputs.version }}) for details.
+            
+            ### Fork Enhancements
+            - Intel iGPU optimizations (VA-API, Mesa iris driver)
+            - Stability watchdog for automatic hang recovery
+            - Memory management improvements
+          draft: false
+          prerelease: ${{ steps.orca_version.outputs.is_prerelease == 'true' }}
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
       - name: Summary
         run: |
           echo "## Build Summary" >> $GITHUB_STEP_SUMMARY
-          echo "- **OrcaSlicer Version:** ${{ steps.orca_version.outputs.version }}" >> $GITHUB_STEP_SUMMARY
-          echo "- **Image:** ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}" >> $GITHUB_STEP_SUMMARY
-          echo "- **Tags:** ${{ steps.meta.outputs.tags }}" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "| Property | Value |" >> $GITHUB_STEP_SUMMARY
+          echo "|----------|-------|" >> $GITHUB_STEP_SUMMARY
+          echo "| **OrcaSlicer Version** | ${{ steps.orca_version.outputs.version }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| **Release Type** | ${{ steps.orca_version.outputs.release_type }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| **Pre-release** | ${{ steps.orca_version.outputs.is_prerelease }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| **Image** | ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| **Tags** | ${{ steps.tags.outputs.tags }} |" >> $GITHUB_STEP_SUMMARY

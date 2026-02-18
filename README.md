@@ -222,20 +222,65 @@ docker exec orcaslicer rm -rf /config/.cache/mesa_shader_cache/*
 | `3000` | HTTP (requires proxy for full functionality) |
 | `3001` | HTTPS (recommended) |
 
+## Available Docker Tags
+
+This image provides multiple tags for different OrcaSlicer release channels:
+
+| Tag | Description |
+|-----|-------------|
+| `latest` | Latest stable OrcaSlicer release (recommended) |
+| `nightly` | Latest nightly/pre-release build |
+| `beta` | Latest beta release |
+| `v2.3.0`, `v2.3.0-beta2`, etc. | Specific OrcaSlicer version |
+
+### Pull Examples
+
+```bash
+# Latest stable release
+docker pull ghcr.io/riddix/orcaslicer:latest
+
+# Nightly build (may be unstable)
+docker pull ghcr.io/riddix/orcaslicer:nightly
+
+# Specific version
+docker pull ghcr.io/riddix/orcaslicer:v2.3.0
+```
+
 ## Building Locally
 
 ```bash
 git clone https://github.com/RiDDiX/docker-orcaslicer-master.git
 cd docker-orcaslicer-master
+
+# Build latest stable
 docker build -t ghcr.io/riddix/orcaslicer:latest .
+
+# Build specific version
+docker build --build-arg ORCASLICER_VERSION=v2.3.0-beta2 -t ghcr.io/riddix/orcaslicer:v2.3.0-beta2 .
+
+# Build nightly
+docker build --build-arg ORCASLICER_VERSION=nightly -t ghcr.io/riddix/orcaslicer:nightly .
 ```
 
 ## Automatic Updates
 
 This repository uses GitHub Actions to automatically:
-1. Check for new OrcaSlicer releases daily
-2. Build and push a new Docker image to GitHub Container Registry
-3. Create a GitHub release with the OrcaSlicer version tag
+
+1. **Check for new releases every 6 hours** (stable and nightly)
+2. **Build and push** new Docker images to GitHub Container Registry
+3. **Create GitHub releases** with the OrcaSlicer version tag
+4. **Tag images correctly** (`latest`, `nightly`, or specific version)
+
+### Manual Workflow Dispatch
+
+You can manually trigger builds via GitHub Actions with different release types:
+
+| Release Type | Description |
+|--------------|-------------|
+| `latest` | Build the latest stable release |
+| `nightly` | Build the latest nightly/pre-release |
+| `beta` | Build the latest beta release |
+| `custom` | Build a specific version (e.g., `v2.3.0-beta2`) |
 
 ## Credits
 
