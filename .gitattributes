@@ -1,0 +1,17 @@
+# Auto detect text files and perform LF normalization
+* text=auto
+
+# Shell scripts must use LF
+*.sh text eol=lf
+root/usr/local/bin/* text eol=lf
+root/etc/s6-overlay/s6-rc.d/*/run text eol=lf
+root/etc/s6-overlay/s6-rc.d/*/up text eol=lf
+root/defaults/autostart text eol=lf
+root/defaults/autostart_wayland text eol=lf
+
+# Dockerfile
+Dockerfile text eol=lf
+
+# Keep Windows line endings for Windows-specific files
+*.bat text eol=crlf
+*.ps1 text eol=crlf
