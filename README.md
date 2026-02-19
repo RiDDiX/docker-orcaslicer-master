@@ -154,10 +154,33 @@ All OrcaSlicer launches go through a wrapper script (`/usr/local/bin/orcaslicer-
 
 | Feature | Description |
 |---------|-------------|
-| **Memory Limits** | 8GB virtual memory limit, 4GB resident memory limit |
+| **Configurable Memory Limits** | Set via `ORCA_MEM_LIMIT_GB` environment variable (default: unlimited) |
 | **Single Instance Lock** | Prevents multiple OrcaSlicer instances from running |
 | **Pre-launch Cleanup** | Clears page cache before starting |
 | **Exit Cleanup** | Cleans oversized shader cache (>1GB) on exit |
+
+### Memory Configuration
+
+For complex STL files, OrcaSlicer may need significant RAM. You can configure memory limits:
+
+```yaml
+environment:
+  - ORCA_MEM_LIMIT_GB=unlimited  # No limit (default) - recommended for complex models
+  - ORCA_MEM_LIMIT_GB=16         # Limit to 16GB
+  - ORCA_MEM_LIMIT_GB=32         # Limit to 32GB
+```
+
+You can also limit Docker container memory directly:
+
+```yaml
+services:
+  orcaslicer:
+    image: ghcr.io/riddix/orcaslicer:latest
+    mem_limit: 16g           # Hard limit for container
+    mem_reservation: 4g      # Soft limit (guaranteed minimum)
+```
+
+**Recommendation**: For slicing complex models, use `ORCA_MEM_LIMIT_GB=unlimited` and let Docker manage memory with `mem_limit`.
 
 ### Mesa/OpenGL Optimizations
 

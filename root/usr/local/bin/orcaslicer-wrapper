@@ -8,9 +8,19 @@ if [ -f /etc/profile.d/intel-gpu.sh ]; then
     source /etc/profile.d/intel-gpu.sh
 fi
 
-# Set process limits to prevent runaway memory usage
-ulimit -v 8388608  # 8GB virtual memory limit
-ulimit -m 4194304  # 4GB resident memory limit
+# Configurable memory limits via environment variables
+# Set ORCA_MEM_LIMIT_GB to limit memory (in GB), or "unlimited" to disable
+# Default: unlimited (no restrictions)
+ORCA_MEM_LIMIT_GB="${ORCA_MEM_LIMIT_GB:-unlimited}"
+
+if [ "$ORCA_MEM_LIMIT_GB" != "unlimited" ] && [ -n "$ORCA_MEM_LIMIT_GB" ]; then
+    # Convert GB to KB for ulimit
+    LIMIT_KB=$((ORCA_MEM_LIMIT_GB * 1024 * 1024))
+    ulimit -v "$LIMIT_KB" 2>/dev/null || true
+    echo "Memory limit set to ${ORCA_MEM_LIMIT_GB}GB"
+else
+    echo "Memory limit: unlimited"
+fi
 
 # Create lock file for single instance
 LOCK_FILE="/tmp/orcaslicer.lock"
