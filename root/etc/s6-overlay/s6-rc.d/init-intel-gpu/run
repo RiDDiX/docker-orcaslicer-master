@@ -1,45 +1,69 @@
 #!/usr/bin/with-contenv bash
 
-# Intel iGPU initialization script for OrcaSlicer stability
+# GPU initialization script for OrcaSlicer
+# Supports: Intel, AMD, and Nvidia GPUs
 
-echo "**** Initializing Intel iGPU optimizations ****"
+echo "**** Initializing GPU optimizations ****"
 
-# Detect Intel GPU
+# Detect GPU vendor
+GPU_VENDOR="unknown"
+GPU_INFO=""
+
 if [ -d /dev/dri ]; then
     echo "**** DRI devices found ****"
     ls -la /dev/dri/
     
-    # Check for Intel GPU via render nodes
+    # Set permissions for all render devices
     for rendernode in /dev/dri/renderD*; do
         if [ -e "$rendernode" ]; then
             echo "**** Found render node: $rendernode ****"
+            chmod 666 "$rendernode" 2>/dev/null || true
         fi
     done
+    for cardnode in /dev/dri/card*; do
+        if [ -e "$cardnode" ]; then
+            chmod 666 "$cardnode" 2>/dev/null || true
+        fi
+    done
+fi
+
+# Detect GPU using lspci
+if command -v lspci &> /dev/null; then
+    GPU_INFO=$(lspci 2>/dev/null | grep -iE "VGA|3D|Display" | head -1)
+    echo "**** Detected GPU: $GPU_INFO ****"
     
-    # Set permissions for render devices
-    if [ -e /dev/dri/renderD128 ]; then
-        chmod 666 /dev/dri/renderD128 2>/dev/null || true
-    fi
-    if [ -e /dev/dri/card0 ]; then
-        chmod 666 /dev/dri/card0 2>/dev/null || true
+    if echo "$GPU_INFO" | grep -qi "intel"; then
+        GPU_VENDOR="intel"
+    elif echo "$GPU_INFO" | grep -qi "amd\|radeon\|ati"; then
+        GPU_VENDOR="amd"
+    elif echo "$GPU_INFO" | grep -qi "nvidia"; then
+        GPU_VENDOR="nvidia"
     fi
 fi
 
-# Create Mesa shader cache directory with proper permissions
+# Allow manual override via environment variable
+if [ -n "$GPU_VENDOR_OVERRIDE" ]; then
+    GPU_VENDOR="$GPU_VENDOR_OVERRIDE"
+    echo "**** GPU vendor override: $GPU_VENDOR ****"
+fi
+
+echo "**** Using GPU vendor: $GPU_VENDOR ****"
+
+# Create cache directories
 SHADER_CACHE_DIR="/config/.cache/mesa_shader_cache"
 mkdir -p "$SHADER_CACHE_DIR"
 chown -R abc:abc "$SHADER_CACHE_DIR"
 
-# Create OrcaSlicer cache directory
 ORCA_CACHE_DIR="/config/.cache/orcaslicer"
 mkdir -p "$ORCA_CACHE_DIR"
 chown -R abc:abc "$ORCA_CACHE_DIR"
 
-# Set Intel-specific environment in profile
-cat > /etc/profile.d/intel-gpu.sh << 'EOF'
-# Intel iGPU optimizations for OrcaSlicer
-export MESA_LOADER_DRIVER_OVERRIDE=iris
-export INTEL_DEBUG=norbc
+# Create GPU-specific environment profile
+cat > /etc/profile.d/gpu-env.sh << EOF
+# GPU optimizations for OrcaSlicer (Auto-detected: $GPU_VENDOR)
+export GPU_VENDOR="$GPU_VENDOR"
+
+# Common settings for all GPUs
 export vblank_mode=0
 export MESA_GL_VERSION_OVERRIDE=4.5
 export MESA_GLSL_VERSION_OVERRIDE=450
@@ -47,38 +71,84 @@ export LIBGL_DRI3_DISABLE=0
 export MESA_SHADER_CACHE_MAX_SIZE=512M
 export MESA_SHADER_CACHE_DIR="/config/.cache/mesa_shader_cache"
 
-# Memory optimizations to prevent hangs
+# Memory optimizations
 export MALLOC_TRIM_THRESHOLD_=131072
 export MALLOC_MMAP_THRESHOLD_=131072
 export MALLOC_TOP_PAD_=131072
 export MALLOC_MMAP_MAX_=65536
 
-# Disable threaded GL to prevent race conditions
-export mesa_glthread=false
-
-# Force software cursor to reduce GPU load
-export XCURSOR_SIZE=24
-
-# Intel VA-API settings
-export LIBVA_DRIVER_NAME=iHD
-export LIBVA_DRIVERS_PATH=/usr/lib/x86_64-linux-gnu/dri
-
 # Reduce OpenGL buffer sizes for stability
 export __GL_MaxFramesAllowed=1
+export mesa_glthread=false
+export XCURSOR_SIZE=24
 EOF
 
-chmod 644 /etc/profile.d/intel-gpu.sh
+# Add vendor-specific settings
+case "$GPU_VENDOR" in
+    intel)
+        cat >> /etc/profile.d/gpu-env.sh << 'EOF'
 
-# Verify VA-API is working
+# Intel-specific optimizations
+export MESA_LOADER_DRIVER_OVERRIDE=iris
+export INTEL_DEBUG=norbc
+export LIBVA_DRIVER_NAME=iHD
+export LIBVA_DRIVERS_PATH=/usr/lib/x86_64-linux-gnu/dri
+EOF
+        echo "**** Intel GPU configuration applied ****"
+        ;;
+    amd)
+        cat >> /etc/profile.d/gpu-env.sh << 'EOF'
+
+# AMD-specific optimizations (RADV/RadeonSI)
+export MESA_LOADER_DRIVER_OVERRIDE=radeonsi
+export RADV_PERFTEST=aco
+export AMD_VULKAN_ICD=RADV
+export LIBVA_DRIVER_NAME=radeonsi
+export LIBVA_DRIVERS_PATH=/usr/lib/x86_64-linux-gnu/dri
+# Enable ACO shader compiler for better performance
+export RADV_DEBUG=llvm
+EOF
+        echo "**** AMD GPU configuration applied ****"
+        ;;
+    nvidia)
+        cat >> /etc/profile.d/gpu-env.sh << 'EOF'
+
+# Nvidia-specific optimizations
+# Note: Nvidia requires nvidia-container-toolkit on the host
+export __GLX_VENDOR_LIBRARY_NAME=nvidia
+export __GL_SYNC_TO_VBLANK=0
+export __GL_SHADER_DISK_CACHE=1
+export __GL_SHADER_DISK_CACHE_PATH="/config/.cache/nvidia_shader_cache"
+# Disable vsync for better performance
+export __GL_SYNC_DISPLAY_DEVICE=none
+EOF
+        # Create nvidia shader cache directory
+        mkdir -p /config/.cache/nvidia_shader_cache
+        chown -R abc:abc /config/.cache/nvidia_shader_cache
+        echo "**** Nvidia GPU configuration applied ****"
+        ;;
+    *)
+        cat >> /etc/profile.d/gpu-env.sh << 'EOF'
+
+# Generic GPU settings (fallback)
+export LIBGL_ALWAYS_SOFTWARE=0
+EOF
+        echo "**** Using generic GPU configuration ****"
+        ;;
+esac
+
+chmod 644 /etc/profile.d/gpu-env.sh
+
+# Verify VA-API
 echo "**** Checking VA-API status ****"
 if command -v vainfo &> /dev/null; then
-    vainfo 2>&1 || echo "VA-API check completed (errors may be normal without display)"
+    vainfo 2>&1 | head -10 || echo "VA-API check completed"
 fi
 
-# Check OpenGL status
-echo "**** Checking OpenGL status ****"
-if command -v glxinfo &> /dev/null; then
-    glxinfo -B 2>&1 | head -20 || echo "GLX check completed"
+# Check Vulkan
+echo "**** Checking Vulkan status ****"
+if command -v vulkaninfo &> /dev/null; then
+    vulkaninfo --summary 2>&1 | head -20 || echo "Vulkan check completed"
 fi
 
-echo "**** Intel iGPU initialization complete ****"
+echo "**** GPU initialization complete ($GPU_VENDOR) ****"

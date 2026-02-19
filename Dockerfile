@@ -13,9 +13,7 @@ LABEL maintainer="thelamer"
 ENV TITLE=OrcaSlicer \
     SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt \
     NO_GAMEPAD=true \
-    # Intel iGPU optimizations
-    MESA_LOADER_DRIVER_OVERRIDE=iris \
-    INTEL_DEBUG=norbc \
+    # GPU-agnostic defaults (auto-detected at runtime)
     vblank_mode=0 \
     MESA_GL_VERSION_OVERRIDE=4.5 \
     MESA_GLSL_VERSION_OVERRIDE=450 \
@@ -32,24 +30,33 @@ RUN \
   curl -o \
     /usr/share/selkies/www/icon.png \
     https://raw.githubusercontent.com/linuxserver/docker-templates/master/linuxserver.io/img/orcaslicer-logo.png && \
-  echo "**** install Intel iGPU packages ****" && \
+  echo "**** install GPU packages (Intel, AMD, Nvidia) ****" && \
   apt-get update && \
   DEBIAN_FRONTEND=noninteractive \
   apt-get install --no-install-recommends -y \
+    # Intel GPU drivers
     intel-media-va-driver \
     i965-va-driver \
-    vainfo \
     intel-gpu-tools \
+    # AMD GPU drivers (RADV/RadeonSI)
+    libdrm-amdgpu1 \
+    mesa-vulkan-drivers \
+    # Common Mesa/VA-API packages (Intel + AMD)
+    vainfo \
     libva2 \
     libva-drm2 \
     libva-x11-2 \
     libvdpau-va-gl1 \
     mesa-va-drivers \
-    mesa-vulkan-drivers \
     libgl1-mesa-dri \
     libglx-mesa0 \
     libegl-mesa0 \
-    mesa-utils && \
+    mesa-utils \
+    # Vulkan support
+    vulkan-tools \
+    libvulkan1 \
+    # PCI utilities for GPU detection
+    pciutils && \
   echo "**** install Mozilla Firefox from official repo ****" && \
   install -d -m 0755 /etc/apt/keyrings && \
   curl -fsSL https://packages.mozilla.org/apt/repo-signing-key.gpg | gpg --dearmor -o /etc/apt/keyrings/packages.mozilla.org.gpg && \

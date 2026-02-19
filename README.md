@@ -72,40 +72,102 @@ The application can be accessed at:
 - **HTTPS (recommended)**: https://yourhost:3001/
 - **HTTP**: http://yourhost:3000/
 
-## Intel iGPU Optimization
+## GPU Acceleration
 
-This container is optimized for Intel integrated GPUs. The following optimizations are included:
+This container supports **Intel, AMD, and Nvidia GPUs** with automatic detection and optimized configuration.
+
+### Supported GPUs
+
+| Vendor | Driver | Auto-configured |
+|--------|--------|-----------------|
+| **Intel** | iris (Gen8+), i965 (older) | ✅ `MESA_LOADER_DRIVER_OVERRIDE=iris` |
+| **AMD** | radeonsi (OpenGL), RADV (Vulkan) | ✅ `MESA_LOADER_DRIVER_OVERRIDE=radeonsi` |
+| **Nvidia** | Proprietary driver | ✅ Requires `nvidia-container-toolkit` on host |
 
 ### Pre-installed Drivers
-- `intel-media-va-driver` - Modern Intel VA-API driver (iHD)
-- `i965-va-driver` - Legacy Intel VA-API driver
-- Mesa Vulkan and OpenGL drivers
+- **Intel**: `intel-media-va-driver`, `i965-va-driver`
+- **AMD**: `libdrm-amdgpu1`, `mesa-vulkan-drivers` (RADV)
+- **Common**: Mesa OpenGL, VA-API, Vulkan tools
 
-### Environment Variables (Auto-configured)
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `MESA_LOADER_DRIVER_OVERRIDE` | `iris` | Use Intel Iris driver |
-| `LIBVA_DRIVER_NAME` | `iHD` | VA-API driver selection |
-| `mesa_glthread` | `false` | Disable threaded GL for stability |
+### Intel GPU Configuration
 
-### Recommended Settings for Intel iGPU
+```yaml
+services:
+  orcaslicer:
+    image: ghcr.io/riddix/orcaslicer:latest
+    devices:
+      - /dev/dri:/dev/dri
+    environment:
+      - DRINODE=/dev/dri/renderD128
+    shm_size: 2gb
+```
+
+For older Intel GPUs (pre-Skylake), override the driver:
+```yaml
+environment:
+  - GPU_VENDOR_OVERRIDE=intel
+  - MESA_LOADER_DRIVER_OVERRIDE=i965
+```
+
+### AMD GPU Configuration
+
+```yaml
+services:
+  orcaslicer:
+    image: ghcr.io/riddix/orcaslicer:latest
+    devices:
+      - /dev/dri:/dev/dri
+      - /dev/kfd:/dev/kfd  # Optional: For ROCm/OpenCL
+    environment:
+      - DRINODE=/dev/dri/renderD128
+    shm_size: 2gb
+    group_add:
+      - video
+      - render
+```
+
+### Nvidia GPU Configuration
+
+**Host requirements:**
+1. Install [nvidia-container-toolkit](https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/install-guide.html)
+2. Configure Docker runtime
+
+```yaml
+services:
+  orcaslicer:
+    image: ghcr.io/riddix/orcaslicer:latest
+    runtime: nvidia  # Or use deploy.resources.reservations
+    environment:
+      - NVIDIA_VISIBLE_DEVICES=all
+      - NVIDIA_DRIVER_CAPABILITIES=all
+    shm_size: 2gb
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+```
+
+### Manual GPU Override
+
+If auto-detection fails, force a specific GPU vendor:
 
 ```yaml
 environment:
-  - DRINODE=/dev/dri/renderD128
-  - DRI_NODE=/dev/dri/renderD128
-devices:
-  - /dev/dri:/dev/dri
-shm_size: 2gb
+  - GPU_VENDOR_OVERRIDE=intel   # or: amd, nvidia
 ```
 
-### Troubleshooting Intel iGPU
+### Troubleshooting GPU
 
 | Issue | Solution |
 |-------|----------|
-| OrcaSlicer hangs on settings change | The watchdog will auto-restart it. Increase `shm_size` to `4gb` |
+| OrcaSlicer hangs on settings change | Increase `shm_size` to `4gb` |
 | Older Intel GPU (pre-Skylake) | Add `-e MESA_LOADER_DRIVER_OVERRIDE=i965` |
-| Disable GPU acceleration | Add `-e DISABLE_ZINK=true -e DISABLE_DRI3=true` |
+| AMD GPU not detected | Add `-e GPU_VENDOR_OVERRIDE=amd` |
+| Nvidia driver issues | Ensure `nvidia-container-toolkit` is installed |
+| Disable GPU acceleration | Add `-e LIBGL_ALWAYS_SOFTWARE=1` |
 
 ## Stability Watchdog
 

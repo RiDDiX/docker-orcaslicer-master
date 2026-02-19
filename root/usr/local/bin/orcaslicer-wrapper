@@ -3,9 +3,9 @@
 # OrcaSlicer Wrapper with Intel iGPU stability improvements
 # This wrapper manages memory and prevents hangs during settings changes
 
-# Source Intel GPU environment
-if [ -f /etc/profile.d/intel-gpu.sh ]; then
-    source /etc/profile.d/intel-gpu.sh
+# Source GPU environment (auto-detected: Intel, AMD, or Nvidia)
+if [ -f /etc/profile.d/gpu-env.sh ]; then
+    source /etc/profile.d/gpu-env.sh
 fi
 
 # Configurable memory limits via environment variables
