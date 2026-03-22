@@ -1,6 +1,6 @@
 #!/bin/bash
 
-# OrcaSlicer Wrapper with Intel iGPU stability improvements
+# OrcaSlicer Wrapper with GPU stability improvements
 # This wrapper manages memory and prevents hangs during settings changes
 
 # Source GPU environment (auto-detected: Intel, AMD, or Nvidia)
@@ -54,9 +54,9 @@ sync
 echo 1 > /proc/sys/vm/drop_caches 2>/dev/null || true
 
 # Log GPU status
-echo "Starting OrcaSlicer with Intel iGPU optimizations..."
-echo "DRI_NODE: ${DRI_NODE:-not set}"
+echo "Starting OrcaSlicer (GPU: ${GPU_VENDOR:-unknown})..."
 echo "DRINODE: ${DRINODE:-not set}"
+echo "DRI_NODE: ${DRI_NODE:-not set}"
 echo "MESA_LOADER_DRIVER_OVERRIDE: ${MESA_LOADER_DRIVER_OVERRIDE:-not set}"
 
 # Launch OrcaSlicer with optimized settings
@@ -66,6 +66,10 @@ cd /opt/orcaslicer
 export QT_QPA_PLATFORM=xcb
 export QT_SCALE_FACTOR=1
 export GDK_BACKEND=x11
+
+# Prevent WebKit2GTK crashes in Docker (Devices dialog)
+export WEBKIT_DISABLE_DMABUF_RENDERER=1
+export WEBKIT_DISABLE_SANDBOX_THIS_IS_DANGEROUS=1
 
 # Disable GPU-intensive features that cause hangs
 export ORCA_DISABLE_GPU_PREVIEW=0

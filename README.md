@@ -5,7 +5,7 @@
 [![GitHub Package](https://img.shields.io/badge/ghcr.io-RiDDiX%2Forcaslicer-blue?style=for-the-badge&logo=github)](https://github.com/RiDDiX/docker-orcaslicer-master/pkgs/container/orcaslicer)
 [![Docker Build](https://img.shields.io/github/actions/workflow/status/RiDDiX/docker-orcaslicer-master/docker-build.yml?style=for-the-badge&logo=github-actions)](https://github.com/RiDDiX/docker-orcaslicer-master/actions)
 
-> **Fork of [linuxserver/docker-orcaslicer](https://github.com/linuxserver/docker-orcaslicer)** with Intel iGPU optimizations, stability improvements, and automatic OrcaSlicer version updates.
+> **Fork of [linuxserver/docker-orcaslicer](https://github.com/linuxserver/docker-orcaslicer)** with multi-GPU support (Intel, AMD, Nvidia), stability improvements, and automatic OrcaSlicer version updates.
 
 [OrcaSlicer](https://github.com/SoftFever/OrcaSlicer) is an open source slicer for FDM printers. This Docker container provides a web-based GUI to run OrcaSlicer in your browser.
 
@@ -15,7 +15,9 @@
 
 This fork adds the following improvements over the original linuxserver.io image:
 
-- **Intel iGPU Optimization**: Pre-installed VA-API drivers, Mesa optimizations, and Intel-specific environment variables
+- **Multi-GPU Support**: Automatic detection and configuration for Intel, AMD, and Nvidia GPUs — including multi-GPU systems
+- **Smart Render Node Selection**: Auto-detects the correct Mesa-compatible render node on multi-GPU hosts (e.g. Nvidia discrete + AMD/Intel integrated)
+- **Devices Dialog Fix**: Prevents WebKit2GTK DMA-BUF crashes when opening the Devices tab
 - **Stability Watchdog**: Automatic detection and recovery from OrcaSlicer hangs
 - **Memory Management**: Prevents freezes during filament/print settings changes
 - **Shader Cache Management**: Automatic cleanup to prevent memory bloat
@@ -34,8 +36,6 @@ services:
       - PUID=1000
       - PGID=1000
       - TZ=Europe/Berlin
-      - DRINODE=/dev/dri/renderD128
-      - DRI_NODE=/dev/dri/renderD128
     volumes:
       - ./config:/config
     ports:
@@ -47,6 +47,8 @@ services:
     restart: unless-stopped
 ```
 
+> **Note:** The container automatically detects your GPU and selects the correct render node. You do **not** need to set `DRINODE` manually unless you want to override auto-detection (see [Manual GPU Override](#manual-gpu-override)).
+
 ### Docker CLI
 
 ```bash
@@ -55,8 +57,6 @@ docker run -d \
   -e PUID=1000 \
   -e PGID=1000 \
   -e TZ=Europe/Berlin \
-  -e DRINODE=/dev/dri/renderD128 \
-  -e DRI_NODE=/dev/dri/renderD128 \
   -p 3000:3000 \
   -p 3001:3001 \
   -v /path/to/config:/config \
@@ -91,14 +91,14 @@ This container supports **Intel, AMD, and Nvidia GPUs** with automatic detection
 
 ### Intel GPU Configuration
 
+Works out of the box — the container auto-detects Intel GPUs (iris for Gen8+).
+
 ```yaml
 services:
   orcaslicer:
     image: ghcr.io/riddix/orcaslicer:latest
     devices:
       - /dev/dri:/dev/dri
-    environment:
-      - DRINODE=/dev/dri/renderD128
     shm_size: 2gb
 ```
 
@@ -111,6 +111,8 @@ environment:
 
 ### AMD GPU Configuration
 
+Works out of the box — the container auto-detects AMD GPUs (radeonsi).
+
 ```yaml
 services:
   orcaslicer:
@@ -118,8 +120,6 @@ services:
     devices:
       - /dev/dri:/dev/dri
       - /dev/kfd:/dev/kfd  # Optional: For ROCm/OpenCL
-    environment:
-      - DRINODE=/dev/dri/renderD128
     shm_size: 2gb
     group_add:
       - video
@@ -129,26 +129,31 @@ services:
 ### Nvidia GPU Configuration
 
 **Host requirements:**
-1. Install [nvidia-container-toolkit](https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/install-guide.html)
-2. Configure Docker runtime
+1. Install [nvidia-container-toolkit](https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/install-guide.html) on the host
+2. Configure the Docker runtime: `sudo nvidia-ctk runtime configure --runtime=docker`
+3. Restart Docker: `sudo systemctl restart docker`
 
 ```yaml
 services:
   orcaslicer:
     image: ghcr.io/riddix/orcaslicer:latest
-    runtime: nvidia  # Or use deploy.resources.reservations
+    runtime: nvidia
     environment:
       - NVIDIA_VISIBLE_DEVICES=all
       - NVIDIA_DRIVER_CAPABILITIES=all
+    devices:
+      - /dev/dri:/dev/dri
     shm_size: 2gb
     deploy:
       resources:
         reservations:
           devices:
             - driver: nvidia
-              count: 1
-              capabilities: [gpu]
+              count: all
+              capabilities: [gpu, utility, compute, graphics, display]
 ```
+
+> **Multi-GPU hosts (e.g. Nvidia + Intel/AMD):** The container automatically selects the Mesa-compatible GPU (Intel/AMD) for rendering if `nvidia-container-toolkit` is not installed. When `nvidia-container-toolkit` is installed and the `nvidia` runtime is configured, the Nvidia GPU is used instead.
 
 ### Manual GPU Override
 
@@ -164,10 +169,13 @@ environment:
 | Issue | Solution |
 |-------|----------|
 | OrcaSlicer hangs on settings change | Increase `shm_size` to `4gb` |
+| **Crash when clicking Devices** | Known upstream OrcaSlicer bug ([#8942](https://github.com/OrcaSlicer/OrcaSlicer/issues/8942), [#10756](https://github.com/OrcaSlicer/OrcaSlicer/issues/10756)). Affects all Linux builds when a BambuLab account is signed in or a Klipper printer is configured. The watchdog auto-restarts OrcaSlicer after the crash. |
+| Wrong GPU selected on multi-GPU host | Set `DRINODE=/dev/dri/renderD12X` to the correct render node (check `ls -la /dev/dri/by-path/` on host) |
 | Older Intel GPU (pre-Skylake) | Add `-e MESA_LOADER_DRIVER_OVERRIDE=i965` |
 | AMD GPU not detected | Add `-e GPU_VENDOR_OVERRIDE=amd` |
-| Nvidia driver issues | Ensure `nvidia-container-toolkit` is installed |
-| Disable GPU acceleration | Add `-e LIBGL_ALWAYS_SOFTWARE=1` |
+| Nvidia: no GPU acceleration | Ensure `nvidia-container-toolkit` is installed and Docker is configured (see above) |
+| Nvidia DRM node used without toolkit | The container auto-skips Nvidia render nodes when `nvidia-container-toolkit` is not present |
+| Disable GPU acceleration entirely | Add `-e LIBGL_ALWAYS_SOFTWARE=1` |
 
 ## Stability Watchdog
 
@@ -288,8 +296,12 @@ docker exec orcaslicer rm -rf /config/.cache/mesa_shader_cache/*
 | `PUID` | `1000` | User ID for file permissions |
 | `PGID` | `1000` | Group ID for file permissions |
 | `TZ` | `Etc/UTC` | Timezone |
-| `DRINODE` | - | GPU render node for DRI3 (e.g., `/dev/dri/renderD128`) |
-| `DRI_NODE` | - | GPU render node for VA-API encoding |
+| `DRINODE` | auto-detected | GPU render node override (e.g., `/dev/dri/renderD128`). Auto-detected if not set. |
+| `DRI_NODE` | auto-detected | GPU render node override for VA-API encoding. Auto-detected if not set. |
+| `GPU_VENDOR_OVERRIDE` | auto-detected | Force GPU vendor: `intel`, `amd`, or `nvidia` |
+| `NVIDIA_VISIBLE_DEVICES` | - | Set to `all` when using Nvidia runtime |
+| `NVIDIA_DRIVER_CAPABILITIES` | - | Set to `all` when using Nvidia runtime |
+| `WEBKIT_DISABLE_DMABUF_RENDERER` | `1` | Prevents WebKit2GTK DMA-BUF crash in Devices dialog |
 | `CUSTOM_USER` | - | HTTP Basic auth username |
 | `PASSWORD` | - | HTTP Basic auth password |
 | `LC_ALL` | - | Locale (e.g., `de_DE.UTF-8`) |
@@ -379,7 +391,8 @@ This project is licensed under the GPL-3.0 License - see the [LICENSE](LICENSE) 
 
 ## Versions
 
-- **15.01.26:** - Fork: Add Intel iGPU optimizations, VA-API drivers, stability watchdog, and memory management
+- **22.03.26:** - Fix Devices dialog crash (WebKit2GTK DMA-BUF), add multi-GPU auto-detection, smart render node selection, USB device enumeration support
+- **15.01.26:** - Fork: Add GPU optimizations, VA-API drivers, stability watchdog, and memory management
 - **01.01.26:** - Add wayland init (upstream)
 - **25.11.25:** - Update project repo name (upstream)
 - **15.09.25:** - Rebase to Ubuntu Noble and Selkies (upstream)

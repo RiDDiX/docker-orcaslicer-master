@@ -18,6 +18,9 @@ ENV TITLE=OrcaSlicer \
     MESA_GL_VERSION_OVERRIDE=4.5 \
     MESA_GLSL_VERSION_OVERRIDE=450 \
     LIBGL_DRI3_DISABLE=0 \
+    # Prevent WebKit2GTK crashes in Docker (Devices dialog)
+    WEBKIT_DISABLE_DMABUF_RENDERER=1 \
+    WEBKIT_DISABLE_SANDBOX_THIS_IS_DANGEROUS=1 \
     # Memory management for OpenGL stability
     MALLOC_TRIM_THRESHOLD_=131072 \
     MALLOC_MMAP_THRESHOLD_=131072 \
@@ -56,7 +59,10 @@ RUN \
     vulkan-tools \
     libvulkan1 \
     # PCI utilities for GPU detection
-    pciutils && \
+    pciutils \
+    # USB/device enumeration (Devices dialog)
+    libudev1 \
+    libusb-1.0-0 && \
   echo "**** install Mozilla Firefox from official repo ****" && \
   install -d -m 0755 /etc/apt/keyrings && \
   curl -fsSL https://packages.mozilla.org/apt/repo-signing-key.gpg | gpg --dearmor -o /etc/apt/keyrings/packages.mozilla.org.gpg && \

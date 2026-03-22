@@ -1,12 +1,14 @@
 #!/usr/bin/with-contenv bash
 
 # OrcaSlicer Watchdog Service
-# Monitors OrcaSlicer for hangs and memory issues, performs automatic recovery
+# Monitors OrcaSlicer for hangs, crashes and memory issues, performs automatic recovery
 
 WATCHDOG_INTERVAL=30  # Check every 30 seconds
 MEMORY_THRESHOLD=80   # Memory usage percentage threshold
 CPU_HANG_THRESHOLD=5  # Minutes of 100% CPU = potential hang
-RESPONSE_TIMEOUT=10   # Seconds to wait for process response
+RESTART_COOLDOWN=15   # Seconds to wait after restart before monitoring again
+MAX_RESTARTS=10       # Max restarts before giving up (resets after stable period)
+STABLE_PERIOD=300     # Seconds of stability before resetting restart counter
 
 log() {
     echo "[$(date '+%Y-%m-%d %H:%M:%S')] WATCHDOG: $1"
@@ -29,7 +31,6 @@ get_memory_usage() {
 check_process_responsive() {
     local pid=$1
     if [ -n "$pid" ]; then
-        # Check if process responds to signals
         kill -0 "$pid" 2>/dev/null
         return $?
     fi
@@ -43,31 +44,47 @@ clear_gpu_cache() {
     sync
 }
 
+start_orca() {
+    log "Starting OrcaSlicer..."
+
+    # Clean up stale lock file and leftover processes
+    rm -f /tmp/orcaslicer.lock
+    pkill -9 -f WebKitWebProcess 2>/dev/null
+    pkill -9 -f WebKitNetworkProcess 2>/dev/null
+    sleep 2
+
+    # Launch via the wrapper script using setsid for proper daemonization
+    # The wrapper sources gpu-env.sh and sets all required env vars
+    setsid /usr/local/bin/orcaslicer-wrapper </dev/null >/dev/null 2>&1 &
+
+    sleep "$RESTART_COOLDOWN"
+    local new_pid=$(get_orca_pid)
+    if [ -n "$new_pid" ]; then
+        log "OrcaSlicer started successfully (PID $new_pid)"
+    else
+        log "WARNING: OrcaSlicer failed to start"
+    fi
+}
+
 restart_orca() {
     log "Initiating OrcaSlicer restart..."
     local pid=$(get_orca_pid)
-    
+
     if [ -n "$pid" ]; then
-        # Try graceful shutdown first
         log "Sending SIGTERM to PID $pid"
         kill -TERM "$pid" 2>/dev/null
         sleep 5
-        
-        # Force kill if still running
         if kill -0 "$pid" 2>/dev/null; then
             log "Force killing PID $pid"
             kill -9 "$pid" 2>/dev/null
         fi
     fi
-    
-    # Clear caches
+
     clear_gpu_cache
-    
-    # Trigger memory cleanup
     sync
     echo 3 > /proc/sys/vm/drop_caches 2>/dev/null || true
-    
-    log "OrcaSlicer restart completed, waiting for autostart..."
+
+    start_orca
 }
 
 log "Starting OrcaSlicer watchdog service"
@@ -75,18 +92,42 @@ log "Memory threshold: ${MEMORY_THRESHOLD}%"
 log "Check interval: ${WATCHDOG_INTERVAL}s"
 
 HIGH_CPU_COUNT=0
+RESTART_COUNT=0
+LAST_RESTART_TIME=0
+
+# Wait for display server to be ready
+sleep 10
 
 while true; do
     sleep "$WATCHDOG_INTERVAL"
-    
+
     ORCA_PID=$(get_orca_pid)
-    
+    NOW=$(date +%s)
+
     if [ -z "$ORCA_PID" ]; then
-        # OrcaSlicer not running, reset counters
         HIGH_CPU_COUNT=0
+
+        if [ "$RESTART_COUNT" -ge "$MAX_RESTARTS" ]; then
+            log "Max restarts ($MAX_RESTARTS) reached. Waiting 5 minutes before trying again."
+            sleep 300
+            RESTART_COUNT=0
+        fi
+
+        RESTART_COUNT=$((RESTART_COUNT + 1))
+        log "OrcaSlicer not running (restart $RESTART_COUNT/$MAX_RESTARTS)"
+        start_orca
+        LAST_RESTART_TIME=$NOW
         continue
     fi
-    
+
+    # Process is alive - track stability
+    if [ "$LAST_RESTART_TIME" -gt 0 ] && [ $((NOW - LAST_RESTART_TIME)) -gt "$STABLE_PERIOD" ]; then
+        if [ "$RESTART_COUNT" -gt 0 ]; then
+            log "OrcaSlicer stable for ${STABLE_PERIOD}s, resetting restart counter"
+            RESTART_COUNT=0
+        fi
+    fi
+
     # Check if process is responsive
     if ! check_process_responsive "$ORCA_PID"; then
         log "OrcaSlicer (PID $ORCA_PID) is not responsive"
@@ -94,25 +135,19 @@ while true; do
         HIGH_CPU_COUNT=0
         continue
     fi
-    
+
     # Check memory usage (in KB)
     MEM_USAGE=$(get_memory_usage "$ORCA_PID")
     MEM_USAGE_MB=$((MEM_USAGE / 1024))
-    
-    # Get total system memory
     TOTAL_MEM=$(grep MemTotal /proc/meminfo | awk '{print $2}')
     MEM_PERCENT=$((MEM_USAGE * 100 / TOTAL_MEM))
-    
+
     if [ "$MEM_PERCENT" -gt "$MEMORY_THRESHOLD" ]; then
         log "High memory usage detected: ${MEM_USAGE_MB}MB (${MEM_PERCENT}%)"
-        log "Clearing shader cache to free memory..."
         clear_gpu_cache
-        
-        # If still high after cache clear, restart
         sleep 5
         NEW_MEM=$(get_memory_usage "$ORCA_PID")
         NEW_MEM_PERCENT=$((NEW_MEM * 100 / TOTAL_MEM))
-        
         if [ "$NEW_MEM_PERCENT" -gt "$MEMORY_THRESHOLD" ]; then
             log "Memory still high after cache clear, restarting OrcaSlicer"
             restart_orca
@@ -120,13 +155,12 @@ while true; do
         HIGH_CPU_COUNT=0
         continue
     fi
-    
+
     # Check for CPU hang (stuck at 100%)
     CPU_USAGE=$(ps -p "$ORCA_PID" -o %cpu= 2>/dev/null | cut -d. -f1)
     if [ "${CPU_USAGE:-0}" -gt 95 ]; then
         HIGH_CPU_COUNT=$((HIGH_CPU_COUNT + 1))
         log "High CPU detected: ${CPU_USAGE}% (count: $HIGH_CPU_COUNT)"
-        
         if [ "$HIGH_CPU_COUNT" -ge $((CPU_HANG_THRESHOLD * 60 / WATCHDOG_INTERVAL)) ]; then
             log "CPU hang detected, restarting OrcaSlicer"
             restart_orca
@@ -135,7 +169,7 @@ while true; do
     else
         HIGH_CPU_COUNT=0
     fi
-    
+
     # Periodic cache maintenance (every 10 minutes)
     if [ $((SECONDS % 600)) -lt "$WATCHDOG_INTERVAL" ]; then
         CACHE_SIZE=$(du -sm /config/.cache/mesa_shader_cache 2>/dev/null | cut -f1)
