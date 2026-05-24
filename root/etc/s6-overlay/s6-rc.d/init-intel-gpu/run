@@ -1,125 +1,113 @@
 #!/usr/bin/with-contenv bash
 
-# GPU initialization script for OrcaSlicer
-# Supports: Intel, AMD, and Nvidia GPUs
-# Handles multi-GPU systems (e.g. Nvidia discrete + AMD/Intel integrated)
+# GPU init for OrcaSlicer (Intel/AMD/Nvidia, multi-GPU aware).
 
 echo "**** Initializing GPU ****"
 
-# ---------------------------------------------------------------------------
-# Helper: get the kernel DRM driver name for a /dev/dri/ node
-# Returns: i915, xe, amdgpu, nvidia, ... or empty string on failure
-# ---------------------------------------------------------------------------
+# Resolve kernel DRM driver behind a /dev/dri/ node.
 drm_driver_for_node() {
-    local node="$1"
-    local bname
-    bname=$(basename "$node")
-    local sysdir="/sys/class/drm/${bname}/device/driver"
-    if [ -L "$sysdir" ]; then
-        basename "$(readlink -f "$sysdir")" 2>/dev/null
-    fi
+    local node="$1" bn sysdir
+    bn=$(basename -- "$node")
+    sysdir="/sys/class/drm/${bn}/device/driver"
+    [ -L "$sysdir" ] || return 1
+    basename -- "$(readlink -f -- "$sysdir")" 2>/dev/null
 }
 
-# ---------------------------------------------------------------------------
-# Helper: check if Nvidia userspace libraries are available
-# (injected by nvidia-container-toolkit at runtime)
-# ---------------------------------------------------------------------------
+# Nvidia userspace present? (nvidia-container-toolkit injects these).
 has_nvidia_userspace() {
     ldconfig -p 2>/dev/null | grep -q libEGL_nvidia.so && return 0
     [ -f /usr/lib/x86_64-linux-gnu/libEGL_nvidia.so.0 ] && return 0
     [ -f /usr/lib/libEGL_nvidia.so.0 ] && return 0
-    command -v nvidia-smi &>/dev/null && return 0
+    command -v nvidia-smi >/dev/null 2>&1 && return 0
     return 1
 }
 
-# ---------------------------------------------------------------------------
-# 1. Set permissions on DRI devices
-# ---------------------------------------------------------------------------
+# Open up DRI nodes for the abc user.
 if [ -d /dev/dri ]; then
     echo "**** DRI devices found ****"
     ls -la /dev/dri/
     for node in /dev/dri/renderD* /dev/dri/card*; do
-        [ -e "$node" ] && chmod 666 "$node" 2>/dev/null || true
+        [ -e "$node" ] && chmod 666 "$node" 2>/dev/null
     done
 fi
 
-# ---------------------------------------------------------------------------
-# 2. Detect GPU vendor (multi-GPU aware)
-# ---------------------------------------------------------------------------
+# Detect vendor and pick a render node.
 GPU_VENDOR="unknown"
+INTEL_KMD=""
 NVIDIA_AVAILABLE=false
 MESA_GPU_FOUND=false
 SELECTED_RENDER_NODE=""
 
-# Check Nvidia userspace availability once
 if has_nvidia_userspace; then
     NVIDIA_AVAILABLE=true
-    echo "**** Nvidia userspace libraries detected (nvidia-container-toolkit) ****"
+    echo "**** Nvidia userspace libraries detected ****"
 fi
 
-# Allow manual override via environment variable
-if [ -n "$GPU_VENDOR_OVERRIDE" ]; then
-    GPU_VENDOR="$GPU_VENDOR_OVERRIDE"
-    echo "**** GPU vendor override: $GPU_VENDOR ****"
-else
-    # Auto-detect by scanning render nodes
-    for rendernode in /dev/dri/renderD*; do
-        [ -e "$rendernode" ] || continue
-        local_driver=$(drm_driver_for_node "$rendernode")
-        echo "**** Render node $rendernode -> kernel driver: ${local_driver:-unknown} ****"
+# Whitelist override values.
+case "${GPU_VENDOR_OVERRIDE:-}" in
+    intel|amd|nvidia)
+        GPU_VENDOR="$GPU_VENDOR_OVERRIDE"
+        echo "**** GPU vendor override: $GPU_VENDOR ****"
+        ;;
+    "")
+        for rendernode in /dev/dri/renderD*; do
+            [ -e "$rendernode" ] || continue
+            kdrv=$(drm_driver_for_node "$rendernode")
+            echo "**** $rendernode -> kernel driver: ${kdrv:-unknown} ****"
 
-        case "$local_driver" in
-            i915|xe)
-                if [ "$MESA_GPU_FOUND" = false ]; then
-                    GPU_VENDOR="intel"
-                    SELECTED_RENDER_NODE="$rendernode"
-                    MESA_GPU_FOUND=true
-                fi
-                ;;
-            amdgpu|radeon)
-                if [ "$MESA_GPU_FOUND" = false ]; then
-                    GPU_VENDOR="amd"
-                    SELECTED_RENDER_NODE="$rendernode"
-                    MESA_GPU_FOUND=true
-                fi
-                ;;
-            nvidia)
-                if [ "$NVIDIA_AVAILABLE" = true ] && [ "$MESA_GPU_FOUND" = false ]; then
-                    GPU_VENDOR="nvidia"
-                    SELECTED_RENDER_NODE="$rendernode"
-                fi
-                ;;
-        esac
-    done
+            case "$kdrv" in
+                i915|xe)
+                    if [ "$MESA_GPU_FOUND" = false ]; then
+                        GPU_VENDOR="intel"
+                        INTEL_KMD="$kdrv"
+                        SELECTED_RENDER_NODE="$rendernode"
+                        MESA_GPU_FOUND=true
+                    fi
+                    ;;
+                amdgpu|radeon)
+                    if [ "$MESA_GPU_FOUND" = false ]; then
+                        GPU_VENDOR="amd"
+                        SELECTED_RENDER_NODE="$rendernode"
+                        MESA_GPU_FOUND=true
+                    fi
+                    ;;
+                nvidia)
+                    if [ "$NVIDIA_AVAILABLE" = true ] && [ "$MESA_GPU_FOUND" = false ]; then
+                        GPU_VENDOR="nvidia"
+                        SELECTED_RENDER_NODE="$rendernode"
+                    fi
+                    ;;
+            esac
+        done
 
-    # Fallback: lspci-based detection if /sys was not available
-    if [ "$GPU_VENDOR" = "unknown" ] && command -v lspci &>/dev/null; then
-        GPU_INFO=$(lspci 2>/dev/null | grep -iE "VGA|3D|Display")
-        echo "**** lspci GPU info: $GPU_INFO ****"
-        if echo "$GPU_INFO" | grep -qi "intel"; then
-            GPU_VENDOR="intel"
-        elif echo "$GPU_INFO" | grep -qi "amd\|radeon\|ati"; then
-            GPU_VENDOR="amd"
-        elif echo "$GPU_INFO" | grep -qi "nvidia" && [ "$NVIDIA_AVAILABLE" = true ]; then
-            GPU_VENDOR="nvidia"
+        # lspci fallback if sysfs walking did not turn up anything.
+        if [ "$GPU_VENDOR" = "unknown" ] && command -v lspci >/dev/null 2>&1; then
+            GPU_INFO=$(lspci 2>/dev/null | grep -iE "VGA|3D|Display")
+            echo "**** lspci GPU info: $GPU_INFO ****"
+            if echo "$GPU_INFO" | grep -qi "intel"; then
+                GPU_VENDOR="intel"
+            elif echo "$GPU_INFO" | grep -qi "amd\|radeon\|ati"; then
+                GPU_VENDOR="amd"
+            elif echo "$GPU_INFO" | grep -qi "nvidia" && [ "$NVIDIA_AVAILABLE" = true ]; then
+                GPU_VENDOR="nvidia"
+            fi
         fi
-    fi
-fi
+        ;;
+    *)
+        echo "**** Ignoring invalid GPU_VENDOR_OVERRIDE=$GPU_VENDOR_OVERRIDE ****"
+        ;;
+esac
 
 echo "**** Using GPU vendor: $GPU_VENDOR ****"
 
-# ---------------------------------------------------------------------------
-# 3. Resolve render node (DRINODE / DRI_NODE)
-# ---------------------------------------------------------------------------
-# User-supplied DRINODE takes priority
+# Resolve render node. User-provided DRINODE/DRI_NODE win.
 if [ -n "$DRINODE" ] && [ -e "$DRINODE" ]; then
     SELECTED_RENDER_NODE="$DRINODE"
-    echo "**** Using user-specified DRINODE: $DRINODE ****"
+    echo "**** Using DRINODE: $DRINODE ****"
 elif [ -n "$DRI_NODE" ] && [ -e "$DRI_NODE" ]; then
     SELECTED_RENDER_NODE="$DRI_NODE"
-    echo "**** Using user-specified DRI_NODE: $DRI_NODE ****"
+    echo "**** Using DRI_NODE: $DRI_NODE ****"
 elif [ -z "$SELECTED_RENDER_NODE" ]; then
-    # Last resort: first available render node
     for rn in /dev/dri/renderD*; do
         if [ -e "$rn" ]; then
             SELECTED_RENDER_NODE="$rn"
@@ -133,12 +121,10 @@ if [ -n "$SELECTED_RENDER_NODE" ]; then
     export DRINODE="$SELECTED_RENDER_NODE"
     export DRI_NODE="$SELECTED_RENDER_NODE"
 else
-    echo "**** WARNING: No render node found - software rendering will be used ****"
+    echo "**** WARNING: no render node found - software rendering ****"
 fi
 
-# ---------------------------------------------------------------------------
-# 3b. Propagate to s6 container environment for Selkies/Xorg
-# ---------------------------------------------------------------------------
+# Propagate to s6 container_environment so later services see it.
 S6_ENV_DIR="/run/s6/container_environment"
 if [ -d "$S6_ENV_DIR" ]; then
     if [ -n "$SELECTED_RENDER_NODE" ]; then
@@ -147,77 +133,70 @@ if [ -d "$S6_ENV_DIR" ]; then
     fi
     printf "%s" "$GPU_VENDOR" > "${S6_ENV_DIR}/GPU_VENDOR"
     printf "%s" "1" > "${S6_ENV_DIR}/WEBKIT_DISABLE_DMABUF_RENDERER"
-    printf "%s" "1" > "${S6_ENV_DIR}/WEBKIT_DISABLE_SANDBOX_THIS_IS_DANGEROUS"
-    echo "**** Wrote GPU env vars to s6 container environment ****"
+    echo "**** Wrote GPU env vars to s6 container_environment ****"
 else
-    echo "**** WARNING: s6 container environment dir not found ****"
+    echo "**** WARNING: s6 container_environment dir not found ****"
 fi
 
-# ---------------------------------------------------------------------------
-# 4. Create cache directories
-# ---------------------------------------------------------------------------
+# Cache dirs. Guard chown until abc exists.
 SHADER_CACHE_DIR="/config/.cache/mesa_shader_cache"
 mkdir -p "$SHADER_CACHE_DIR"
-chown -R abc:abc "$SHADER_CACHE_DIR"
+if id abc >/dev/null 2>&1; then
+    chown -R abc:abc "$SHADER_CACHE_DIR"
+fi
 
 ORCA_CACHE_DIR="/config/.cache/orcaslicer"
 mkdir -p "$ORCA_CACHE_DIR"
-chown -R abc:abc "$ORCA_CACHE_DIR"
+if id abc >/dev/null 2>&1; then
+    chown -R abc:abc "$ORCA_CACHE_DIR"
+fi
 
-# ---------------------------------------------------------------------------
-# 5. Build GPU environment profile
-# ---------------------------------------------------------------------------
+# GPU env profile sourced by the wrapper.
 cat > /etc/profile.d/gpu-env.sh << EOF
-# GPU environment for OrcaSlicer (auto-detected: $GPU_VENDOR)
+# GPU env for OrcaSlicer (auto: $GPU_VENDOR, kmd: ${INTEL_KMD:-n/a})
 export GPU_VENDOR="$GPU_VENDOR"
 
-# Render node
 export DRINODE="$SELECTED_RENDER_NODE"
 export DRI_NODE="$SELECTED_RENDER_NODE"
 
-# Common Mesa/GL settings
+# Common Mesa/GL bits. Let Mesa report its real GL version.
 export vblank_mode=0
-export MESA_GL_VERSION_OVERRIDE=4.5
-export MESA_GLSL_VERSION_OVERRIDE=450
 export LIBGL_DRI3_DISABLE=0
 export MESA_SHADER_CACHE_MAX_SIZE=512M
 export MESA_SHADER_CACHE_DIR="/config/.cache/mesa_shader_cache"
 
-# Memory optimizations
+# Glibc allocator tuning to keep RSS predictable.
 export MALLOC_TRIM_THRESHOLD_=131072
 export MALLOC_MMAP_THRESHOLD_=131072
 export MALLOC_TOP_PAD_=131072
 export MALLOC_MMAP_MAX_=65536
 
-# OpenGL stability
-export __GL_MaxFramesAllowed=1
+# wxGLCanvas is not thread-safe with mesa glthread.
 export mesa_glthread=false
+
 export XCURSOR_SIZE=24
 
-# Prevent WebKit2GTK DMA-BUF crash (OrcaSlicer Devices dialog)
+# WebKit2GTK DMA-BUF path crashes the Devices dialog in this container.
 export WEBKIT_DISABLE_DMABUF_RENDERER=1
-export WEBKIT_DISABLE_SANDBOX_THIS_IS_DANGEROUS=1
 EOF
 
-# Vendor-specific settings
 case "$GPU_VENDOR" in
     intel)
-        cat >> /etc/profile.d/gpu-env.sh << 'EOF'
+        cat >> /etc/profile.d/gpu-env.sh << EOF
 
-# Intel-specific (iris for Gen8+, i965 for older)
-export MESA_LOADER_DRIVER_OVERRIDE=iris
-export INTEL_DEBUG=norbc
+# Intel
 export LIBVA_DRIVER_NAME=iHD
 export LIBVA_DRIVERS_PATH=/usr/lib/x86_64-linux-gnu/dri
 EOF
-        echo "**** Intel GPU configuration applied ****"
+        if [ "$INTEL_KMD" = "xe" ]; then
+            echo "export INTEL_KMD_TYPE=xe" >> /etc/profile.d/gpu-env.sh
+        fi
+        echo "**** Intel GPU configuration applied (kmd=$INTEL_KMD) ****"
         ;;
     amd)
         cat >> /etc/profile.d/gpu-env.sh << 'EOF'
 
-# AMD-specific (RadeonSI OpenGL, RADV Vulkan)
-export MESA_LOADER_DRIVER_OVERRIDE=radeonsi
-export RADV_PERFTEST=aco
+# AMD (RadeonSI / RADV).
 export AMD_VULKAN_ICD=RADV
 export LIBVA_DRIVER_NAME=radeonsi
 export LIBVA_DRIVERS_PATH=/usr/lib/x86_64-linux-gnu/dri
@@ -227,40 +206,47 @@ EOF
     nvidia)
         cat >> /etc/profile.d/gpu-env.sh << 'EOF'
 
-# Nvidia-specific (requires nvidia-container-toolkit on host)
+# Nvidia (needs nvidia-container-toolkit on host).
 export __GLX_VENDOR_LIBRARY_NAME=nvidia
+export __EGL_VENDOR_LIBRARY_FILENAMES=/usr/share/glvnd/egl_vendor.d/10_nvidia.json
 export __GL_SYNC_TO_VBLANK=0
+export __GL_SYNC_DISPLAY_DEVICE=none
+export __GL_MaxFramesAllowed=1
 export __GL_SHADER_DISK_CACHE=1
 export __GL_SHADER_DISK_CACHE_PATH="/config/.cache/nvidia_shader_cache"
-export __GL_SYNC_DISPLAY_DEVICE=none
 EOF
         mkdir -p /config/.cache/nvidia_shader_cache
-        chown -R abc:abc /config/.cache/nvidia_shader_cache
+        if id abc >/dev/null 2>&1; then
+            chown -R abc:abc /config/.cache/nvidia_shader_cache
+        fi
         echo "**** Nvidia GPU configuration applied ****"
         ;;
     *)
         cat >> /etc/profile.d/gpu-env.sh << 'EOF'
 
-# Fallback: try hardware rendering, fall back to software if unavailable
-export LIBGL_ALWAYS_SOFTWARE=0
+# No usable GPU detected, fall back to llvmpipe.
+export LIBGL_ALWAYS_SOFTWARE=1
+export GALLIUM_DRIVER=llvmpipe
 EOF
-        echo "**** Using generic GPU configuration (software fallback) ****"
+        echo "**** Software rendering fallback applied ****"
         ;;
 esac
 
 chmod 644 /etc/profile.d/gpu-env.sh
 
-# ---------------------------------------------------------------------------
-# 6. Verify GPU stack
-# ---------------------------------------------------------------------------
+# Smoke tests. Use pipefail so the wrapped command's exit code is honored.
+set -o pipefail
+
 echo "**** Checking VA-API status ****"
-if command -v vainfo &>/dev/null; then
-    vainfo 2>&1 | head -10 || echo "VA-API check completed"
+if command -v vainfo >/dev/null 2>&1; then
+    vainfo 2>&1 | head -40 || echo "VA-API check failed"
 fi
 
 echo "**** Checking Vulkan status ****"
-if command -v vulkaninfo &>/dev/null; then
-    vulkaninfo --summary 2>&1 | head -20 || echo "Vulkan check completed"
+if command -v vulkaninfo >/dev/null 2>&1; then
+    vulkaninfo --summary 2>&1 | head -20 || echo "Vulkan check failed"
 fi
 
-echo "**** GPU initialization complete ($GPU_VENDOR, node: ${SELECTED_RENDER_NODE:-none}) ****"
+set +o pipefail
+
+echo "**** GPU init done ($GPU_VENDOR, node: ${SELECTED_RENDER_NODE:-none}) ****"

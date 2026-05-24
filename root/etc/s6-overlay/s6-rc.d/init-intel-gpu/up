@@ -1,1 +1,1 @@
-/bin/bash /etc/s6-overlay/s6-rc.d/init-intel-gpu/run
+/usr/bin/with-contenv bash /etc/s6-overlay/s6-rc.d/init-intel-gpu/run
