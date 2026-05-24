@@ -41,7 +41,6 @@ clear_gpu_cache() {
     log "Clearing GPU caches..."
     rm -rf /config/.cache/mesa_shader_cache/* 2>/dev/null
     rm -rf /tmp/mesa* 2>/dev/null
-    sync
 }
 
 start_orca() {
@@ -80,9 +79,14 @@ restart_orca() {
         fi
     fi
 
+    # Drop any leftover GPU consumers before Xorg sees a stale fd
+    pkill -9 -f WebKitWebProcess 2>/dev/null
+    pkill -9 -f WebKitNetworkProcess 2>/dev/null
+    pkill -9 -f orca-slicer 2>/dev/null
+    pkill -9 -f OrcaSlicer 2>/dev/null
+    sleep 1
+
     clear_gpu_cache
-    sync
-    echo 3 > /proc/sys/vm/drop_caches 2>/dev/null || true
 
     start_orca
 }

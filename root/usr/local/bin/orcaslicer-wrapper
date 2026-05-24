@@ -30,28 +30,24 @@ flock -n 200 || {
     exit 1
 }
 
-# Cleanup function
 cleanup() {
     echo "Cleaning up OrcaSlicer..."
-    # Clear Mesa shader cache if it gets too large (>1GB)
+
+    # Kill leftover WebKit children so they release /dev/dri fds
+    pkill -9 -f WebKitWebProcess 2>/dev/null
+    pkill -9 -f WebKitNetworkProcess 2>/dev/null
+
+    # Trim shader cache if it grew past 1GB
     CACHE_SIZE=$(du -sm /config/.cache/mesa_shader_cache 2>/dev/null | cut -f1)
     if [ "${CACHE_SIZE:-0}" -gt 1024 ]; then
         echo "Clearing oversized shader cache..."
         rm -rf /config/.cache/mesa_shader_cache/*
     fi
-    
-    # Trigger memory cleanup
-    sync
-    echo 1 > /proc/sys/vm/drop_caches 2>/dev/null || true
-    
+
     rm -f "$LOCK_FILE"
 }
 
 trap cleanup EXIT INT TERM
-
-# Pre-launch memory cleanup
-sync
-echo 1 > /proc/sys/vm/drop_caches 2>/dev/null || true
 
 # Log GPU status
 echo "Starting OrcaSlicer (GPU: ${GPU_VENDOR:-unknown})..."
