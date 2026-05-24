@@ -1,76 +1,93 @@
 #!/bin/bash
 
-# OrcaSlicer Wrapper with GPU stability improvements
-# This wrapper manages memory and prevents hangs during settings changes
+# OrcaSlicer launch wrapper.
 
-# Source GPU environment (auto-detected: Intel, AMD, or Nvidia)
+LOG_FILE="/tmp/orcaslicer-wrapper.log"
+PID_FILE="/tmp/orcaslicer.pid"
+LOCK_FILE="/tmp/orcaslicer.lock"
+
+# Push everything we say to a file so the watchdog and docker logs can read it.
+exec >>"$LOG_FILE" 2>&1
+echo
+echo "==== $(date '+%F %T') wrapper start (pid $$) ===="
+
+# When openbox autostart calls us, DISPLAY is inherited.
+# When the watchdog (s6 service) calls us, it is not, so set a default.
+export DISPLAY="${DISPLAY:-:1}"
+
 if [ -f /etc/profile.d/gpu-env.sh ]; then
     source /etc/profile.d/gpu-env.sh
 fi
 
-# Configurable memory limits via environment variables
-# Set ORCA_MEM_LIMIT_GB to limit memory (in GB), or "unlimited" to disable
-# Default: unlimited (no restrictions)
 ORCA_MEM_LIMIT_GB="${ORCA_MEM_LIMIT_GB:-unlimited}"
-
 if [ "$ORCA_MEM_LIMIT_GB" != "unlimited" ] && [ -n "$ORCA_MEM_LIMIT_GB" ]; then
-    # Convert GB to KB for ulimit
     LIMIT_KB=$((ORCA_MEM_LIMIT_GB * 1024 * 1024))
     ulimit -v "$LIMIT_KB" 2>/dev/null || true
-    echo "Memory limit set to ${ORCA_MEM_LIMIT_GB}GB"
+    echo "Memory limit: ${ORCA_MEM_LIMIT_GB}GB"
 else
     echo "Memory limit: unlimited"
 fi
 
-# Create lock file for single instance
-LOCK_FILE="/tmp/orcaslicer.lock"
+# Single-instance lock.
 exec 200>"$LOCK_FILE"
-flock -n 200 || {
-    echo "OrcaSlicer is already running"
-    exit 1
-}
+if ! flock -n 200; then
+    echo "Another instance holds the lock, exiting."
+    exit 0
+fi
 
 cleanup() {
-    echo "Cleaning up OrcaSlicer..."
-
-    # Kill leftover WebKit children so they release /dev/dri fds
+    echo "==== $(date '+%F %T') wrapper exit ===="
     pkill -9 -f WebKitWebProcess 2>/dev/null
     pkill -9 -f WebKitNetworkProcess 2>/dev/null
-
-    # Trim shader cache if it grew past 1GB
     CACHE_SIZE=$(du -sm /config/.cache/mesa_shader_cache 2>/dev/null | cut -f1)
     if [ "${CACHE_SIZE:-0}" -gt 1024 ]; then
-        echo "Clearing oversized shader cache..."
+        echo "Trimming oversized shader cache"
         rm -rf /config/.cache/mesa_shader_cache/*
     fi
-
-    rm -f "$LOCK_FILE"
+    rm -f "$LOCK_FILE" "$PID_FILE"
 }
-
 trap cleanup EXIT INT TERM
 
-# Log GPU status
-echo "Starting OrcaSlicer (GPU: ${GPU_VENDOR:-unknown})..."
-echo "DRINODE: ${DRINODE:-not set}"
-echo "DRI_NODE: ${DRI_NODE:-not set}"
-echo "MESA_LOADER_DRIVER_OVERRIDE: ${MESA_LOADER_DRIVER_OVERRIDE:-not set}"
+echo "DISPLAY=$DISPLAY  GPU_VENDOR=${GPU_VENDOR:-unknown}  DRINODE=${DRINODE:-not set}"
+echo "MESA_LOADER_DRIVER_OVERRIDE=${MESA_LOADER_DRIVER_OVERRIDE:-not set}"
 
-# Launch OrcaSlicer with optimized settings
-cd /opt/orcaslicer
+cd /opt/orcaslicer || { echo "ERROR: /opt/orcaslicer missing"; exit 1; }
 
-# Set additional runtime optimizations
 export QT_QPA_PLATFORM=xcb
 export QT_SCALE_FACTOR=1
 export GDK_BACKEND=x11
-
-# Prevent WebKit2GTK crashes in Docker (Devices dialog)
 export WEBKIT_DISABLE_DMABUF_RENDERER=1
 export WEBKIT_DISABLE_SANDBOX_THIS_IS_DANGEROUS=1
-
-# Disable GPU-intensive features that cause hangs
 export ORCA_DISABLE_GPU_PREVIEW=0
 export __GL_SYNC_TO_VBLANK=0
-export __GL_YIELD="USLEEP"
+export __GL_YIELD=USLEEP
 
-# Run OrcaSlicer
-exec /opt/orcaslicer/AppRun "$@"
+# Locate the actual entry point. AppImage layouts differ between versions.
+ENTRY=""
+for c in \
+    /opt/orcaslicer/AppRun \
+    /opt/orcaslicer/orca-slicer \
+    /opt/orcaslicer/OrcaSlicer \
+    /opt/orcaslicer/usr/bin/orca-slicer \
+    /opt/orcaslicer/usr/bin/OrcaSlicer \
+    /opt/orcaslicer/bin/orca-slicer \
+    /opt/orcaslicer/bin/OrcaSlicer
+do
+    if [ -x "$c" ]; then
+        ENTRY="$c"
+        break
+    fi
+done
+
+if [ -z "$ENTRY" ]; then
+    echo "ERROR: no OrcaSlicer entry point found. Dump:"
+    ls -la /opt/orcaslicer/ 2>&1
+    [ -d /opt/orcaslicer/usr/bin ] && ls -la /opt/orcaslicer/usr/bin/ 2>&1
+    [ -d /opt/orcaslicer/bin ] && ls -la /opt/orcaslicer/bin/ 2>&1
+    exit 1
+fi
+echo "Launching $ENTRY"
+
+# Record our PID so the watchdog can track us reliably.
+echo $$ > "$PID_FILE"
+exec "$ENTRY" "$@"

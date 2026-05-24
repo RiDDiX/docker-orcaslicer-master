@@ -15,7 +15,16 @@ log() {
 }
 
 get_orca_pid() {
-    pgrep -f "orca-slicer|OrcaSlicer|orca_slicer" | head -1
+    # The wrapper writes its PID before exec. Trust that first, fall back to pgrep.
+    if [ -f /tmp/orcaslicer.pid ]; then
+        local pid
+        pid=$(cat /tmp/orcaslicer.pid 2>/dev/null)
+        if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then
+            echo "$pid"
+            return
+        fi
+    fi
+    pgrep -f "orca-?slicer|OrcaSlicer" 2>/dev/null | head -1
 }
 
 get_memory_usage() {
@@ -46,22 +55,25 @@ clear_gpu_cache() {
 start_orca() {
     log "Starting OrcaSlicer..."
 
-    # Clean up stale lock file and leftover processes
-    rm -f /tmp/orcaslicer.lock
+    rm -f /tmp/orcaslicer.lock /tmp/orcaslicer.pid
     pkill -9 -f WebKitWebProcess 2>/dev/null
     pkill -9 -f WebKitNetworkProcess 2>/dev/null
     sleep 2
 
-    # Launch via the wrapper script using setsid for proper daemonization
-    # The wrapper sources gpu-env.sh and sets all required env vars
-    setsid /usr/local/bin/orcaslicer-wrapper </dev/null >/dev/null 2>&1 &
+    # Wrapper writes its own log to /tmp/orcaslicer-wrapper.log.
+    # Make sure DISPLAY reaches it even though s6 services do not inherit it.
+    DISPLAY="${DISPLAY:-:1}" setsid /usr/local/bin/orcaslicer-wrapper </dev/null >/dev/null 2>&1 &
 
     sleep "$RESTART_COOLDOWN"
-    local new_pid=$(get_orca_pid)
+    local new_pid
+    new_pid=$(get_orca_pid)
     if [ -n "$new_pid" ]; then
-        log "OrcaSlicer started successfully (PID $new_pid)"
+        log "OrcaSlicer started (PID $new_pid)"
     else
-        log "WARNING: OrcaSlicer failed to start"
+        log "WARNING: OrcaSlicer failed to start. Tail /tmp/orcaslicer-wrapper.log:"
+        tail -n 20 /tmp/orcaslicer-wrapper.log 2>/dev/null | while IFS= read -r line; do
+            log "  $line"
+        done
     fi
 }
 
