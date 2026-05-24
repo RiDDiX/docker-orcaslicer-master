@@ -62,7 +62,9 @@ RUN \
     pciutils \
     # USB/device enumeration (Devices dialog)
     libudev1 \
-    libusb-1.0-0 && \
+    libusb-1.0-0 \
+    # OrcaSlicer pulls libmspack at startup
+    libmspack0 && \
   echo "**** install Mozilla Firefox from official repo ****" && \
   install -d -m 0755 /etc/apt/keyrings && \
   curl -fsSL https://packages.mozilla.org/apt/repo-signing-key.gpg | gpg --dearmor -o /etc/apt/keyrings/packages.mozilla.org.gpg && \
@@ -126,6 +128,19 @@ RUN \
   chmod +x /tmp/orca.app && \
   ./orca.app --appimage-extract && \
   mv squashfs-root /opt/orcaslicer && \
+  echo "**** verify orca shared library deps ****" && \
+  ORCA_BIN=$(find /opt/orcaslicer -maxdepth 3 -type f -name 'orca-slicer' -o -name 'OrcaSlicer' | head -1) && \
+  if [ -n "$ORCA_BIN" ]; then \
+    echo "Binary: $ORCA_BIN" && \
+    MISSING=$(ldd "$ORCA_BIN" 2>/dev/null | awk '/not found/ {print $1}') && \
+    if [ -n "$MISSING" ]; then \
+      echo "WARNING: missing libraries detected:" && echo "$MISSING"; \
+    else \
+      echo "All shared libraries resolved."; \
+    fi; \
+  else \
+    echo "WARNING: orca binary not found under /opt/orcaslicer"; \
+  fi && \
   localedef -i en_GB -f UTF-8 en_GB.UTF-8 && \
   printf "Linuxserver.io version: ${VERSION}\nBuild-date: ${BUILD_DATE}" > /build_version && \
   echo "**** cleanup ****" && \
