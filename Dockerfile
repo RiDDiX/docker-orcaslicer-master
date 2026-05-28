@@ -64,7 +64,9 @@ RUN \
     libudev1 \
     libusb-1.0-0 \
     # OrcaSlicer pulls libmspack at startup
-    libmspack0 && \
+    libmspack0 \
+    # Keep PRIMARY and CLIPBOARD selections owned so xclip reads do not hang
+    autocutsel && \
   echo "**** install Mozilla Firefox from official repo ****" && \
   install -d -m 0755 /etc/apt/keyrings && \
   curl -fsSL https://packages.mozilla.org/apt/repo-signing-key.gpg | gpg --dearmor -o /etc/apt/keyrings/packages.mozilla.org.gpg && \
@@ -158,7 +160,9 @@ COPY /root /
 # make scripts executable
 RUN chmod +x /usr/local/bin/orcaslicer-wrapper && \
     chmod +x /etc/s6-overlay/s6-rc.d/init-intel-gpu/run && \
-    chmod +x /etc/s6-overlay/s6-rc.d/svc-orca-watchdog/run
+    chmod +x /etc/s6-overlay/s6-rc.d/svc-orca-watchdog/run && \
+    chmod +x /etc/s6-overlay/s6-rc.d/svc-autocutsel-clipboard/run && \
+    chmod +x /etc/s6-overlay/s6-rc.d/svc-autocutsel-primary/run
 
 # ports and volumes
 EXPOSE 3001

@@ -1,0 +1,12 @@
+#!/usr/bin/with-contenv bash
+
+export DISPLAY="${DISPLAY:-:1}"
+
+for i in $(seq 1 60); do
+    if xdpyinfo -display "$DISPLAY" >/dev/null 2>&1; then
+        break
+    fi
+    sleep 1
+done
+
+exec autocutsel -selection PRIMARY -display "$DISPLAY"
