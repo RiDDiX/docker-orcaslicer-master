@@ -1,0 +1,71 @@
+#!/usr/bin/env python3
+"""
+Patch selkies input_handler.py so that xclip subprocess calls do not
+hang and the read/write timeouts are not absurdly tight.
+
+Selkies polls the X clipboard every 500ms via xclip. Two bugs there:
+  - create_subprocess_exec is invoked without stdin=DEVNULL, which makes
+    xclip occasionally inherit a non-EOF stdin from the asyncio runtime
+    and never signal EOF on its own stdout pipe.
+  - timeout=1 is too tight when autocutsel is taking over selection
+    ownership, producing constant TimeoutError warnings in the log.
+
+Idempotent. Safe to re-run.
+"""
+
+import re
+import sys
+from pathlib import Path
+
+
+def patch(path: Path) -> bool:
+    src = path.read_text()
+    out = src
+
+    # Add stdin=subprocess.DEVNULL to all xclip create_subprocess_exec calls
+    # that currently start their kwargs with stdout=subprocess.PIPE.
+    out = re.sub(
+        r'(create_subprocess_exec\(\s*\n\s*"xclip"[^)]+?\n\s+)(stdout=subprocess\.PIPE)',
+        r'\1stdin=subprocess.DEVNULL, \2',
+        out,
+        flags=re.DOTALL,
+    )
+
+    # Bump the very tight timeouts on the xclip path. autocutsel handover
+    # plus subprocess startup occasionally exceeds 1 second on slow hosts.
+    bumps = [
+        (r'(proc_targets\.communicate\(\),\s*timeout=)1\b', r'\g<1>5'),
+        (r'(proc_text\.communicate\(\),\s*timeout=)1\b',    r'\g<1>5'),
+        (r'(proc_data\.communicate\(\),\s*timeout=)1\b',    r'\g<1>5'),
+        (r'(proc_data\.communicate\(\),\s*timeout=)3\b',    r'\g<1>10'),
+        (r'(process\.wait\(\),\s*timeout=)2\.0\b',          r'\g<1>5.0'),
+    ]
+    for pat, rep in bumps:
+        out = re.sub(pat, rep, out)
+
+    if out == src:
+        return False
+    path.write_text(out)
+    return True
+
+
+def main() -> int:
+    candidates = []
+    for root in (Path("/lsiopy"), Path("/usr/lib"), Path("/usr/local/lib")):
+        if root.exists():
+            candidates.extend(root.rglob("selkies/input_handler.py"))
+    if not candidates:
+        print("WARNING: selkies input_handler.py not found, skipping patch", file=sys.stderr)
+        return 0
+    for path in candidates:
+        try:
+            changed = patch(path)
+        except Exception as exc:
+            print(f"ERROR patching {path}: {exc}", file=sys.stderr)
+            continue
+        print(f"{'patched' if changed else 'already current'}: {path}")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

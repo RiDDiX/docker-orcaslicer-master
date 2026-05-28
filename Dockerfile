@@ -159,10 +159,14 @@ COPY /root /
 
 # make scripts executable
 RUN chmod +x /usr/local/bin/orcaslicer-wrapper && \
+    chmod +x /usr/local/bin/selkies-clipboard-patch && \
     chmod +x /etc/s6-overlay/s6-rc.d/init-intel-gpu/run && \
     chmod +x /etc/s6-overlay/s6-rc.d/svc-orca-watchdog/run && \
     chmod +x /etc/s6-overlay/s6-rc.d/svc-autocutsel-clipboard/run && \
     chmod +x /etc/s6-overlay/s6-rc.d/svc-autocutsel-primary/run
+
+# Patch selkies so xclip subprocess calls do not hang the clipboard loop
+RUN /usr/local/bin/selkies-clipboard-patch
 
 # ports and volumes
 EXPOSE 3001
